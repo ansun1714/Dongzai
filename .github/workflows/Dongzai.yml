@@ -41,13 +41,19 @@ jobs:
         ./scripts/feeds install -a
         echo "环境准备完成"
 
-    - name: 创建主题
+    - name: 创建主题目录
       run: |
         cd lede
         mkdir -p package/lean/dongzhai-theme/luci-theme-dongzhai/files/www/luci-static/dongzhai/css
+        echo "主题目录创建完成"
+
+    - name: 创建主题Makefile
+      run: |
+        cd lede
+        echo "创建主题Makefile..."
         
-        # 简单创建Makefile
-        cat > package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile << 'EOF'
+        # 逐行创建Makefile，避免多行字符串问题
+        cat << 'EOF' > package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
 include $(TOPDIR)/rules.mk
 LUCI_TITLE:=栋仔主题
 LUCI_DEPENDS:=
@@ -68,7 +74,8 @@ define Package/luci-theme-dongzhai/install
 endef
 $(eval $(call BuildPackage,luci-theme-dongzhai))
 EOF
-        echo "主题创建完成"
+        
+        echo "主题Makefile创建完成"
 
     - name: 应用配置
       run: |
@@ -99,3 +106,9 @@ EOF
         name: 栋仔固件
         path: lede/bin/targets/**/*.bin
         retention-days: 30
+
+    - name: 编译成功通知
+      if: success()
+      run: |
+        echo "编译成功完成！"
+        echo "固件已上传到Artifacts"
