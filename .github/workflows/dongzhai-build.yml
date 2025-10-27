@@ -1,4 +1,4 @@
-name: 栋仔主题完整编译
+name: 栋仔主题编译
 
 on:
   workflow_dispatch:
@@ -26,52 +26,41 @@ jobs:
 
     - name: 验证必要文件
       run: |
-        echo "🔍 检查必要文件..."
+        echo "检查必要文件..."
         if [ ! -f ".config" ]; then
-          echo "❌ 错误：缺少 .config 文件"
-          echo "请在仓库根目录创建 .config 文件"
+          echo "错误：缺少 .config 文件"
           exit 1
         fi
-        echo "✅ 找到 .config 文件"
-        
-        echo "📋 配置摘要:"
-        grep -E "CONFIG_TARGET|CONFIG_PACKAGE_luci" .config | head -10
+        echo "找到 .config 文件"
 
     - name: 安装编译环境
       run: |
-        echo "🛠️ 安装编译工具..."
+        echo "安装编译工具..."
         sudo apt-get update
-        sudo apt-get install -y build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch python3 python3-pip unzip zlib1g-dev lib32gcc-s1 libc6-dev-i386 subversion flex uglifyjs git-core gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler g++-multilib antlr3 gperf wget curl swig rsync
-        echo "✅ 编译环境安装完成"
+        sudo apt-get install -y build-essential git libncurses5-dev libssl-dev python3 unzip wget curl
+        echo "编译环境安装完成"
 
     - name: 克隆Lean源码
       run: |
-        echo "📥 克隆 Lean 的 OpenWrt 源码..."
+        echo "克隆 Lean 的 OpenWrt 源码..."
         git clone $REPO_URL lede
-        cd lede
-        echo "✅ 源码克隆完成"
+        echo "源码克隆完成"
 
     - name: 更新软件源
       run: |
         cd lede
-        echo "🔄 更新软件源..."
+        echo "更新软件源..."
         ./scripts/feeds update -a
         ./scripts/feeds install -a
-        echo "✅ 软件源更新完成"
+        echo "软件源更新完成"
 
     - name: 部署栋仔主题
       run: |
         cd lede
-        echo "🎨 部署栋仔个性化主题..."
+        echo "部署栋仔个性化主题..."
         
         # 创建主题目录
-        mkdir -p package/lean/dongzhai-theme/luci-theme-dongzhai
-        
-        # 复制主题文件（如果存在）
-        if [ -d "../.github/themes/dongzhai" ]; then
-          echo "复制主题文件..."
-          cp -r ../.github/themes/dongzhai/* package/lean/dongzhai-theme/
-        fi
+        mkdir -p package/lean/dongzhai-theme/luci-theme-dongzhai/files/www/luci-static/dongzhai/css
         
         # 创建主题的Makefile
         cat > package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile << 'EOF'
@@ -91,7 +80,7 @@ define Package/luci-theme-dongzhai
 endef
 
 define Package/luci-theme-dongzhai/description
-  基于Design主题修改的栋仔个性化主题
+  栋仔个性化主题
 endef
 
 define Build/Configure
@@ -108,136 +97,56 @@ endef
 $(eval $(call BuildPackage,luci-theme-dongzhai))
 EOF
 
-        echo "✅ 栋仔主题部署完成"
+        # 创建基础CSS文件
+        cat > package/lean/dongzhai-theme/luci-theme-dongzhai/files/www/luci-static/dongzhai/css/style.css << 'EOF'
+/* 栋仔个性化主题样式 */
+.header .fill .brand {
+    color: #ff6600;
+    font-weight: bold;
+}
+EOF
+
+        echo "栋仔主题部署完成"
 
     - name: 应用配置
       run: |
         cd lede
-        echo "⚙️ 应用编译配置..."
+        echo "应用编译配置..."
         
         # 复制用户配置文件
         cp ../.config .config
         
         # 确保栋仔主题被启用
-        if ! grep -q "CONFIG_PACKAGE_luci-theme-dongzhai=y" .config; then
-          echo "添加栋仔主题配置..."
-          echo "" >> .config
-          echo "# 栋仔个性化主题" >> .config
-          echo "CONFIG_PACKAGE_luci-theme-dongzhai=y" >> .config
-        fi
-        
-        # 设置默认主题
-        if grep -q "CONFIG_PACKAGE_luci=y" .config; then
-          sed -i '/CONFIG_DEFAULT_luci-theme/d' .config
-          echo "CONFIG_DEFAULT_luci-theme-dongzhai=y" >> .config
-        fi
+        echo "CONFIG_PACKAGE_luci-theme-dongzhai=y" >> .config
+        echo "CONFIG_DEFAULT_luci-theme-dongzhai=y" >> .config
         
         make defconfig
-        echo "✅ 配置应用完成"
+        echo "配置应用完成"
 
     - name: 下载软件包
       run: |
         cd lede
-        echo "📦 下载软件包..."
-        make download -j$(nproc)
-        echo "✅ 软件包下载完成"
+        echo "下载软件包..."
+        make download -j2
+        echo "软件包下载完成"
 
     - name: 编译固件
       run: |
         cd lede
-        echo "🔨 开始编译固件..."
-        echo "⏰ 这可能需要 2-4 小时，请耐心等待..."
-        echo "📊 使用 $(($(nproc) / 2 + 1)) 个线程编译..."
-        make -j$(($(nproc) / 2 + 1)) || make -j1
-        echo "✅ 编译完成"
+        echo "开始编译固件..."
+        echo "这可能需要 2-4 小时..."
+        make -j2
+        echo "编译完成"
 
-    - name: 收集编译结果
-      id: collect_results
-      run: |
-        cd lede/bin/targets
-        echo "🔍 查找生成的固件..."
-        
-        FIRMWARE_FILES=$(find . -name "*.bin" -type f)
-        if [ -n "$FIRMWARE_FILES" ]; then
-          echo "🎉 找到固件文件:"
-          for file in $FIRMWARE_FILES; do
-            size=$(du -h "$file" | cut -f1)
-            echo "   📄 $file ($size)"
-          done
-          
-          # 提取设备信息
-          FIRST_FILE=$(echo "$FIRMWARE_FILES" | head -1)
-          DEVICE_INFO=$(echo "$FIRMWARE_FILES" | head -1 | grep -o 'targets/[^/]*/[^/]*' | cut -d'/' -f2-3 | tr '/' '_')
-          
-          echo "has_firmware=true" >> $GITHUB_OUTPUT
-          echo "firmware_count=$(echo "$FIRMWARE_FILES" | wc -w)" >> $GITHUB_OUTPUT
-          echo "device_info=$DEVICE_INFO" >> $GITHUB_ENV
-        else
-          echo "❌ 未找到固件文件"
-          echo "has_firmware=false" >> $GITHUB_OUTPUT
-        fi
-
-    - name: 上传固件到Artifacts
-      if: steps.collect_results.outputs.has_firmware == 'true'
+    - name: 上传固件
       uses: actions/upload-artifact@v4
       with:
-        name: 栋仔主题固件_${{ env.device_info }}_${{ github.event.inputs.version }}
+        name: 栋仔主题固件
         path: lede/bin/targets/**/*.bin
         retention-days: 30
 
-    - name: 创建Release
-      if: steps.collect_results.outputs.has_firmware == 'true'
-      uses: softprops/action-gh-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: dongzhai-${{ env.device_info }}-${{ github.event.inputs.version }}-$(date +%Y%m%d)
-        name: 栋仔主题固件 ${{ github.event.inputs.version }}
-        body: |
-          # 🏠 栋仔主题个性化固件
-          
-          ## 编译信息
-          - **版本**: ${{ github.event.inputs.version }}
-          - **设备**: ${{ env.device_info }}
-          - **时间**: $(date)
-          - **源码**: Lean's OpenWrt
-          
-          ## 特色功能
-          - 🎨 栋仔个性化主题界面
-          - 🚀 优化的用户体验
-          - 📱 良好的移动端支持
-          
-          ## 使用说明
-          1. 下载对应的固件文件
-          2. 通过路由器管理界面刷入
-          3. 享受个性化体验！
-        files: lede/bin/targets/**/*.bin
-        draft: false
-        prerelease: ${{ github.event.inputs.version == 'dev' }}
-
-    - name: 编译完成总结
-      if: always()
+    - name: 编译完成通知
+      if: success()
       run: |
-        echo ""
-        echo "=========================================="
-        echo "           🏁 编译任务完成"
-        echo "=========================================="
-        if [ "${{ success() }}" = "true" ]; then
-          if [ "${{ steps.collect_results.outputs.has_firmware }}" = "true" ]; then
-            echo "✅ 编译成功！"
-            echo "📦 生成 ${{ steps.collect_results.outputs.firmware_count }} 个固件文件"
-            echo "🏷️ 设备平台: ${{ env.device_info }}"
-            echo "🔖 版本类型: ${{ github.event.inputs.version }}"
-            echo ""
-            echo "📥 下载位置:"
-            echo "   - Releases 页面"
-            echo "   - Actions → Artifacts"
-          else
-            echo "⚠️ 编译过程完成但未找到固件文件"
-            echo "请检查编译日志了解详情"
-          fi
-        else
-          echo "❌ 编译失败！"
-          echo "请查看错误日志并修正问题"
-        fi
-        echo "=========================================="
+        echo "编译成功完成！"
+        echo "固件已上传到 Artifacts"
