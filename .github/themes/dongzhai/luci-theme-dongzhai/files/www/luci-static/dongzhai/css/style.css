@@ -1,0 +1,25 @@
+/* 栋仔个性化主题样式 */
+.header .fill .brand {
+    color: #ff6600;
+    font-weight: bold;
+    font-size: 18px;
+}
+.sidebar {
+    background: #2c3e50;
+}
+.sidebar .nav > li > a {
+    color: #ecf0f1;
+}
+.btn-primary {
+    background-color: #ff6600;
+    border-color: #ff6600;
+}
+/* 栋仔主题标识 */
+.dongzhai-badge {
+    background: #e74c3c;
+    color: white;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 12px;
+    margin-left: 5px;
+}
