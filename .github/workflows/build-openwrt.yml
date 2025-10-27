@@ -1,0 +1,64 @@
+name: 编译栋仔主题固件
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-20.04
+    
+    steps:
+    - name: 检查代码
+      uses: actions/checkout@v4
+
+    - name: 显示基本信息
+      run: |
+        echo "🎯 开始编译栋仔主题固件"
+        echo "📁 当前目录: $(pwd)"
+        echo "📄 文件列表:"
+        ls -la
+        echo "🔧 配置文件内容:"
+        if [ -f ".config" ]; then
+          cat .config
+        else
+          echo "❌ 缺少 .config 文件"
+        fi
+
+    - name: 初始化环境
+      run: |
+        echo "安装必要工具..."
+        sudo apt-get update
+        sudo apt-get install -y git build-essential
+        echo "✅ 环境初始化完成"
+
+    - name: 克隆源码
+      run: |
+        echo "克隆 OpenWrt 源码..."
+        git clone https://github.com/coolsnowwolf/lede openwrt
+        echo "✅ 源码克隆完成"
+
+    - name: 准备编译
+      run: |
+        cd openwrt
+        echo "准备编译环境..."
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+        echo "✅ 编译环境准备完成"
+
+    - name: 测试编译配置
+      run: |
+        cd openwrt
+        echo "测试编译配置..."
+        if [ -f "../.config" ]; then
+          cp ../.config .config
+          make defconfig
+          echo "✅ 配置测试成功"
+        else
+          echo "❌ 缺少配置文件"
+          exit 1
+        fi
+
+    - name: 完成提示
+      run: |
+        echo "🎉 基础环境测试成功！"
+        echo "下一步可以开始完整编译了"
