@@ -1,0 +1,15 @@
+name: 测试工作流
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - name: 简单测试
+      run: |
+        echo "🎉 工作流运行成功！"
+        echo "当前时间: $(date)"
+        echo "系统信息:"
+        uname -a
