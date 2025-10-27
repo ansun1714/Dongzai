@@ -1,0 +1,27 @@
+name: 编译栋仔主题固件
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: 检查代码
+      uses: actions/checkout@v4
+
+    - name: 显示基本信息
+      run: |
+        echo "🎯 开始编译栋仔主题固件"
+        echo "当前目录: $(pwd)"
+        if [ -f ".config" ]; then
+          echo "找到配置文件"
+        else
+          echo "❌ 缺少 .config 文件"
+        fi
+
+    - name: 环境测试
+      run: |
+        echo "✅ 工作流正常运行中..."
+        echo "可以开始完整编译流程"
