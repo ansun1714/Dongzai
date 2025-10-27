@@ -1,0 +1,101 @@
+name: 栋仔主题稳定编译
+
+on:
+  workflow_dispatch:
+
+env:
+  REPO_URL: https://github.com/coolsnowwolf/lede
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 300
+
+    steps:
+    - name: 检查代码和配置
+      uses: actions/checkout@v4
+
+    - name: 验证必要文件
+      run: |
+        if [ ! -f ".config" ]; then
+          echo "错误：缺少 .config 文件"
+          exit 1
+        fi
+        echo "找到 .config 文件"
+
+    - name: 安装基础环境
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential git libncurses5-dev libssl-dev python3 unzip wget curl
+        echo "环境安装完成"
+
+    - name: 克隆源码
+      run: |
+        git clone $REPO_URL lede
+        echo "源码克隆完成"
+
+    - name: 准备环境
+      run: |
+        cd lede
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+        echo "环境准备完成"
+
+    - name: 创建主题
+      run: |
+        cd lede
+        mkdir -p package/lean/dongzhai-theme/luci-theme-dongzhai/files/www/luci-static/dongzhai/css
+        
+        # 简单创建Makefile
+        cat > package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile << 'EOF'
+include $(TOPDIR)/rules.mk
+LUCI_TITLE:=栋仔主题
+LUCI_DEPENDS:=
+PKG_VERSION:=1.0
+PKG_RELEASE:=1
+include $(INCLUDE_DIR)/package.mk
+define Package/luci-theme-dongzhai
+  $(call Package/luci/webtemplate)
+  TITLE:=栋仔主题
+  DEPENDS:=+luci-compat
+endef
+define Build/Configure
+endef
+define Build/Compile
+endef
+define Package/luci-theme-dongzhai/install
+	$(INSTALL_DIR) $(1)/www/luci-static/dongzhai
+endef
+$(eval $(call BuildPackage,luci-theme-dongzhai))
+EOF
+        echo "主题创建完成"
+
+    - name: 应用配置
+      run: |
+        cd lede
+        cp ../.config .config
+        echo "CONFIG_PACKAGE_luci-theme-dongzhai=y" >> .config
+        echo "CONFIG_DEFAULT_luci-theme-dongzhai=y" >> .config
+        echo "# CONFIG_PACKAGE_node is not set" >> .config
+        make defconfig
+        echo "配置应用完成"
+
+    - name: 下载软件包
+      run: |
+        cd lede
+        make download -j1
+        echo "软件包下载完成"
+
+    - name: 编译固件
+      run: |
+        cd lede
+        echo "开始编译，使用单线程避免内存问题..."
+        make -j1 V=s
+        echo "编译完成"
+
+    - name: 上传结果
+      uses: actions/upload-artifact@v4
+      with:
+        name: 栋仔固件
+        path: lede/bin/targets/**/*.bin
+        retention-days: 30
