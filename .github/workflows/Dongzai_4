@@ -1,0 +1,209 @@
+name: 栋仔主题编译44
+
+on:
+  workflow_dispatch:
+    inputs:
+      compile_threads:
+        description: '编译线程数'
+        required: false
+        default: '1'
+        type: choice
+        options:
+        - '1'
+        - '2'
+
+env:
+  REPO_URL: https://github.com/coolsnowwolf/lede
+  BUILD_DIR: lede
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+    - name: 检查代码和配置
+      uses: actions/checkout@v4
+
+    - name: 初始磁盘空间检查
+      run: |
+        echo "初始磁盘空间:"
+        df -h
+        echo "清理系统缓存..."
+        sudo apt-get clean
+        sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+        sudo rm -rf /usr/local/lib/node_modules
+        df -h
+
+    - name: 验证配置文件
+      run: |
+        if [ ! -f ".config" ]; then
+          echo "错误：缺少配置文件"
+          exit 1
+        fi
+        echo "找到配置文件"
+
+    - name: 安装编译环境
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential git libncurses5-dev libssl-dev python3 unzip wget curl
+        echo "环境安装完成"
+        # 清理apt缓存
+        sudo apt-get clean
+        sudo rm -rf /var/lib/apt/lists/*
+
+    - name: 克隆源码
+      run: |
+        git clone --depth=1 $REPO_URL $BUILD_DIR
+        echo "源码克隆完成"
+        df -h
+
+    - name: 更新软件源
+      run: |
+        cd $BUILD_DIR
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+        echo "软件源更新完成"
+
+    - name: 处理Node.js问题
+      run: |
+        cd $BUILD_DIR
+        echo "处理Node.js问题..."
+        if [ -d "feeds/packages/lang/node" ]; then
+          rm -rf feeds/packages/lang/node
+        fi
+        mkdir -p feeds/packages/lang/node
+        echo "Node.js处理完成"
+
+    - name: 创建主题目录
+      run: |
+        cd $BUILD_DIR
+        mkdir -p package/lean/dongzhai-theme/luci-theme-dongzhai/files/www/luci-static/dongzhai/css
+        echo "主题目录创建完成"
+
+    - name: 创建主题Makefile
+      run: |
+        cd $BUILD_DIR/package/lean/dongzhai-theme/luci-theme-dongzhai
+        echo "include \$(TOPDIR)/rules.mk" > Makefile
+        echo "LUCI_TITLE:=栋仔主题" >> Makefile
+        echo "LUCI_DEPENDS:=" >> Makefile
+        echo "PKG_VERSION:=1.0" >> Makefile
+        echo "PKG_RELEASE:=1" >> Makefile
+        echo "include \$(INCLUDE_DIR)/package.mk" >> Makefile
+        echo "define Package/luci-theme-dongzhai" >> Makefile
+        echo "  \$(call Package/luci/webtemplate)" >> Makefile
+        echo "  TITLE:=栋仔主题" >> Makefile
+        echo "  DEPENDS:=+luci-compat" >> Makefile
+        echo "endef" >> Makefile
+        echo "define Package/luci-theme-dongzhai/description" >> Makefile
+        echo "  栋仔个性化主题" >> Makefile
+        echo "endef" >> Makefile
+        echo "define Build/Configure" >> Makefile
+        echo "endef" >> Makefile
+        echo "define Build/Compile" >> Makefile
+        echo "endef" >> Makefile
+        echo "define Package/luci-theme-dongzhai/install" >> Makefile
+        echo "	\$(INSTALL_DIR) \$(1)/www/luci-static/dongzhai" >> Makefile
+        echo "	[ -d ./files ] && \$(CP) ./files/* \$(1)/www/luci-static/dongzhai/" >> Makefile
+        echo "endef" >> Makefile
+        echo "\$(eval \$(call BuildPackage,luci-theme-dongzhai))" >> Makefile
+        echo "主题Makefile创建完成"
+
+    - name: 创建主题CSS
+      run: |
+        cd $BUILD_DIR/package/lean/dongzhai-theme/luci-theme-dongzhai/files/www/luci-static/dongzhai/css
+        echo "/* 栋仔主题样式 */" > style.css
+        echo ".header .fill .brand {" >> style.css
+        echo "    color: #ff6600;" >> style.css
+        echo "    font-weight: bold;" >> style.css
+        echo "    font-size: 18px;" >> style.css
+        echo "}" >> style.css
+        echo ".sidebar {" >> style.css
+        echo "    background: #2c3e50;" >> style.css
+        echo "}" >> style.css
+        echo ".sidebar .nav > li > a {" >> style.css
+        echo "    color: #ecf0f1;" >> style.css
+        echo "}" >> style.css
+        echo ".btn-primary {" >> style.css
+        echo "    background-color: #ff6600;" >> style.css
+        echo "    border-color: #ff6600;" >> style.css
+        echo "}" >> style.css
+        echo "主题CSS创建完成"
+
+    - name: 应用配置
+      run: |
+        cd $BUILD_DIR
+        cp ../.config .config
+        echo "CONFIG_PACKAGE_luci-theme-dongzhai=y" >> .config
+        echo "CONFIG_DEFAULT_luci-theme-dongzhai=y" >> .config
+        echo "# CONFIG_PACKAGE_node is not set" >> .config
+        echo "# CONFIG_PACKAGE_node-npm is not set" >> .config
+        echo "# CONFIG_PACKAGE_node-yarn is not set" >> .config
+        
+        # 添加空间优化配置
+        echo "# 空间优化配置" >> .config
+        echo "# CONFIG_KERNEL_DEBUG_INFO is not set" >> .config
+        echo "CONFIG_KERNEL_DEBUG_INFO_REDUCED=n" >> .config
+        echo "# CONFIG_DEBUG is not set" >> .config
+        echo "CONFIG_USE_STRIP=y" >> .config
+        echo "CONFIG_USE_SSTRIP=n" >> .config
+        echo "# CONFIG_BUILD_NLS is not set" >> .config
+        echo "CONFIG_CLEAN_IPKG=y" >> .config
+        
+        make defconfig
+        echo "配置应用完成"
+
+    - name: 磁盘空间检查（编译前）
+      run: |
+        echo "编译前磁盘空间:"
+        df -h
+        # 再次清理系统缓存
+        sudo apt-get clean
+        sudo rm -rf /var/cache/apt/archives
+        sudo rm -rf /tmp/*
+        df -h
+
+    - name: 下载软件包
+      run: |
+        cd $BUILD_DIR
+        THREADS=${{ github.event.inputs.compile_threads }}
+        make download -j$THREADS
+        echo "软件包下载完成"
+
+    - name: 编译固件
+      run: |
+        cd $BUILD_DIR
+        THREADS=${{ github.event.inputs.compile_threads }}
+        echo "开始编译..."
+        echo "当前磁盘空间:"
+        df -h
+        
+        # 使用更保守的编译策略
+        if [ "$THREADS" = "2" ]; then
+          echo "使用2线程编译"
+          make -j2 V=s 2>&1 | tee build.log || make -j1 V=s
+        else
+          echo "使用单线程编译"
+          make -j1 V=s
+        fi
+        
+        echo "编译完成"
+
+    - name: 检查生成的文件
+      run: |
+        cd $BUILD_DIR
+        echo "查找生成的固件文件:"
+        find bin/targets/ -name "*.bin" -o -name "*.img" | head -10
+        echo "最终磁盘空间:"
+        df -h
+
+    - name: 上传结果
+      uses: actions/upload-artifact@v4
+      with:
+        name: 栋仔固件
+        path: $BUILD_DIR/bin/targets/**/*.bin
+        retention-days: 30
+
+    - name: 完成提示
+      run: |
+        echo "编译流程完成"
