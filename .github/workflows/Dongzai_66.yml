@@ -1,4 +1,4 @@
-name: 栋仔主题编译66
+name: 栋仔主题编译6
 
 on:
   workflow_dispatch:
