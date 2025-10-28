@@ -67,9 +67,10 @@ jobs:
           echo "错误：$BUILD_DIR 目录不存在"
           exit 1
         fi
-        # 直接使用完整路径执行命令
-        $BUILD_DIR/scripts/feeds update -a
-        $BUILD_DIR/scripts/feeds install -a
+        # 简化输出，只显示关键信息
+        echo "开始更新软件源..."
+        $BUILD_DIR/scripts/feeds update -a > /dev/null 2>&1
+        $BUILD_DIR/scripts/feeds install -a > /dev/null 2>&1
         echo "软件源更新完成"
 
     - name: 处理Node.js问题
@@ -183,8 +184,9 @@ EOF
         echo "# CONFIG_BUILD_NLS is not set" >> "$BUILD_DIR/.config"
         echo "CONFIG_CLEAN_IPKG=y" >> "$BUILD_DIR/.config"
         
-        # 直接使用完整路径执行make命令
-        make -C "$BUILD_DIR" defconfig
+        # 简化输出
+        echo "应用配置..."
+        make -C "$BUILD_DIR" defconfig > /dev/null 2>&1
         echo "配置应用完成"
 
     - name: 磁盘空间检查（编译前）
@@ -195,7 +197,7 @@ EOF
         sudo rm -rf /var/cache/apt/archives
         sudo rm -rf /tmp/*
         if [ -d "$BUILD_DIR/.git" ]; then
-          git -C "$BUILD_DIR" gc --aggressive --prune=all
+          git -C "$BUILD_DIR" gc --aggressive --prune=all > /dev/null 2>&1
         fi
         df -h
 
@@ -206,8 +208,9 @@ EOF
           exit 1
         fi
         THREADS=${{ github.event.inputs.compile_threads }}
-        # 直接使用完整路径执行make命令
-        make -C "$BUILD_DIR" download -j$THREADS
+        # 简化输出
+        echo "开始下载软件包..."
+        make -C "$BUILD_DIR" download -j$THREADS > /dev/null 2>&1
         echo "软件包下载完成"
 
     - name: 编译固件
@@ -221,13 +224,24 @@ EOF
         echo "当前磁盘空间:"
         df -h
         
-        # 使用更保守的编译策略
+        # 使用更保守的编译策略，只在失败时输出详细日志
         if [ "$THREADS" = "2" ]; then
           echo "使用2线程编译"
-          make -C "$BUILD_DIR" -j2 || make -C "$BUILD_DIR" -j1 V=s
+          # 先尝试静默编译
+          if make -C "$BUILD_DIR" -j2 > /dev/null 2>&1; then
+            echo "编译成功"
+          else
+            echo "编译失败，使用详细模式重试..."
+            make -C "$BUILD_DIR" -j1 V=s
+          fi
         else
           echo "使用单线程编译"
-          make -C "$BUILD_DIR" -j1 V=s
+          if make -C "$BUILD_DIR" -j1 > /dev/null 2>&1; then
+            echo "编译成功"
+          else
+            echo "编译失败，使用详细模式重试..."
+            make -C "$BUILD_DIR" -j1 V=s
+          fi
         fi
         
         echo "编译完成"
