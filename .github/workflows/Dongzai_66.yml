@@ -1,4 +1,4 @@
-name: 栋仔主题编译6
+name: 栋仔主题编译66
 
 on:
   workflow_dispatch:
@@ -9,8 +9,8 @@ on:
         default: '1'
         type: choice
         options:
-        - '1'
-        - '2'
+          - '1'
+          - '2'
 
 env:
   REPO_URL: https://github.com/coolsnowwolf/lede
@@ -67,7 +67,6 @@ jobs:
           echo "错误：$BUILD_DIR 目录不存在"
           exit 1
         fi
-        # 简化输出，只显示关键信息
         echo "开始更新软件源..."
         $BUILD_DIR/scripts/feeds update -a > /dev/null 2>&1
         $BUILD_DIR/scripts/feeds install -a > /dev/null 2>&1
@@ -167,14 +166,12 @@ EOF
           exit 1
         fi
         cp .config "$BUILD_DIR/.config"
-        # 添加主题配置
         echo "CONFIG_PACKAGE_luci-theme-dongzhai=y" >> "$BUILD_DIR/.config"
         echo "CONFIG_DEFAULT_luci-theme-dongzhai=y" >> "$BUILD_DIR/.config"
         echo "# CONFIG_PACKAGE_node is not set" >> "$BUILD_DIR/.config"
         echo "# CONFIG_PACKAGE_node-npm is not set" >> "$BUILD_DIR/.config"
         echo "# CONFIG_PACKAGE_node-yarn is not set" >> "$BUILD_DIR/.config"
         
-        # 添加空间优化配置
         echo "# 空间优化配置" >> "$BUILD_DIR/.config"
         echo "# CONFIG_KERNEL_DEBUG_INFO is not set" >> "$BUILD_DIR/.config"
         echo "CONFIG_KERNEL_DEBUG_INFO_REDUCED=n" >> "$BUILD_DIR/.config"
@@ -184,7 +181,6 @@ EOF
         echo "# CONFIG_BUILD_NLS is not set" >> "$BUILD_DIR/.config"
         echo "CONFIG_CLEAN_IPKG=y" >> "$BUILD_DIR/.config"
         
-        # 简化输出
         echo "应用配置..."
         make -C "$BUILD_DIR" defconfig > /dev/null 2>&1
         echo "配置应用完成"
@@ -208,7 +204,6 @@ EOF
           exit 1
         fi
         THREADS=${{ github.event.inputs.compile_threads }}
-        # 简化输出
         echo "开始下载软件包..."
         make -C "$BUILD_DIR" download -j$THREADS > /dev/null 2>&1
         echo "软件包下载完成"
@@ -224,10 +219,8 @@ EOF
         echo "当前磁盘空间:"
         df -h
         
-        # 使用更保守的编译策略，只在失败时输出详细日志
         if [ "$THREADS" = "2" ]; then
           echo "使用2线程编译"
-          # 先尝试静默编译
           if make -C "$BUILD_DIR" -j2 > /dev/null 2>&1; then
             echo "编译成功"
           else
