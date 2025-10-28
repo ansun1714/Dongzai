@@ -48,13 +48,11 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y build-essential git libncurses5-dev libssl-dev python3 unzip wget curl
         echo "环境安装完成"
-        # 清理apt缓存
         sudo apt-get clean
         sudo rm -rf /var/lib/apt/lists/*
 
     - name: 克隆源码
       run: |
-        # 先删除可能存在的旧目录
         if [ -d "$BUILD_DIR" ]; then
           echo "删除已存在的 $BUILD_DIR 目录"
           rm -rf $BUILD_DIR
@@ -69,9 +67,8 @@ jobs:
           echo "错误：$BUILD_DIR 目录不存在"
           exit 1
         fi
-        cd "$BUILD_DIR"
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a
+        (cd "$BUILD_DIR" && ./scripts/feeds update -a)
+        (cd "$BUILD_DIR" && ./scripts/feeds install -a)
         echo "软件源更新完成"
 
     - name: 处理Node.js问题
@@ -80,20 +77,15 @@ jobs:
           echo "错误：$BUILD_DIR 目录不存在"
           exit 1
         fi
-        cd "$BUILD_DIR"
         echo "处理Node.js问题..."
-        if [ -d "feeds/packages/lang/node" ]; then
-          rm -rf feeds/packages/lang/node
+        if [ -d "$BUILD_DIR/feeds/packages/lang/node" ]; then
+          rm -rf "$BUILD_DIR/feeds/packages/lang/node"
         fi
-        mkdir -p feeds/packages/lang/node
+        mkdir -p "$BUILD_DIR/feeds/packages/lang/node"
         echo "Node.js处理完成"
 
     - name: 创建主题目录
       run: |
-        if [ ! -d "$BUILD_DIR" ]; then
-          echo "错误：$BUILD_DIR 目录不存在"
-          exit 1
-        fi
         mkdir -p "$BUILD_DIR/package/lean/dongzhai-theme/luci-theme-dongzhai/files/www/luci-static/dongzhai/css"
         echo "主题目录创建完成"
 
@@ -104,8 +96,7 @@ jobs:
           echo "错误：主题目录不存在"
           exit 1
         fi
-        cd "$THEME_DIR"
-        cat > Makefile << 'EOF'
+        cat > "$THEME_DIR/Makefile" << 'EOF'
 include $(TOPDIR)/rules.mk
 
 LUCI_TITLE:=栋仔主题
@@ -147,8 +138,7 @@ EOF
           echo "错误：CSS目录不存在"
           exit 1
         fi
-        cd "$CSS_DIR"
-        cat > style.css << 'EOF'
+        cat > "$CSS_DIR/style.css" << 'EOF'
 /* 栋仔主题样式 */
 .header .fill .brand {
     color: #ff6600;
@@ -174,40 +164,36 @@ EOF
           echo "错误：$BUILD_DIR 目录不存在"
           exit 1
         fi
-        cd "$BUILD_DIR"
-        cp ../.config .config
+        cp .config "$BUILD_DIR/.config"
         # 添加主题配置
-        echo "CONFIG_PACKAGE_luci-theme-dongzhai=y" >> .config
-        echo "CONFIG_DEFAULT_luci-theme-dongzhai=y" >> .config
-        echo "# CONFIG_PACKAGE_node is not set" >> .config
-        echo "# CONFIG_PACKAGE_node-npm is not set" >> .config
-        echo "# CONFIG_PACKAGE_node-yarn is not set" >> .config
+        echo "CONFIG_PACKAGE_luci-theme-dongzhai=y" >> "$BUILD_DIR/.config"
+        echo "CONFIG_DEFAULT_luci-theme-dongzhai=y" >> "$BUILD_DIR/.config"
+        echo "# CONFIG_PACKAGE_node is not set" >> "$BUILD_DIR/.config"
+        echo "# CONFIG_PACKAGE_node-npm is not set" >> "$BUILD_DIR/.config"
+        echo "# CONFIG_PACKAGE_node-yarn is not set" >> "$BUILD_DIR/.config"
         
         # 添加空间优化配置
-        echo "# 空间优化配置" >> .config
-        echo "# CONFIG_KERNEL_DEBUG_INFO is not set" >> .config
-        echo "CONFIG_KERNEL_DEBUG_INFO_REDUCED=n" >> .config
-        echo "# CONFIG_DEBUG is not set" >> .config
-        echo "CONFIG_USE_STRIP=y" >> .config
-        echo "CONFIG_USE_SSTRIP=n" >> .config
-        echo "# CONFIG_BUILD_NLS is not set" >> .config
-        echo "CONFIG_CLEAN_IPKG=y" >> .config
+        echo "# 空间优化配置" >> "$BUILD_DIR/.config"
+        echo "# CONFIG_KERNEL_DEBUG_INFO is not set" >> "$BUILD_DIR/.config"
+        echo "CONFIG_KERNEL_DEBUG_INFO_REDUCED=n" >> "$BUILD_DIR/.config"
+        echo "# CONFIG_DEBUG is not set" >> "$BUILD_DIR/.config"
+        echo "CONFIG_USE_STRIP=y" >> "$BUILD_DIR/.config"
+        echo "CONFIG_USE_SSTRIP=n" >> "$BUILD_DIR/.config"
+        echo "# CONFIG_BUILD_NLS is not set" >> "$BUILD_DIR/.config"
+        echo "CONFIG_CLEAN_IPKG=y" >> "$BUILD_DIR/.config"
         
-        make defconfig
+        (cd "$BUILD_DIR" && make defconfig)
         echo "配置应用完成"
 
     - name: 磁盘空间检查（编译前）
       run: |
         echo "编译前磁盘空间:"
         df -h
-        # 再次清理系统缓存
         sudo apt-get clean
         sudo rm -rf /var/cache/apt/archives
         sudo rm -rf /tmp/*
-        # 清理Git对象缓存
         if [ -d "$BUILD_DIR/.git" ]; then
-          cd "$BUILD_DIR"
-          git gc --aggressive --prune=all
+          (cd "$BUILD_DIR" && git gc --aggressive --prune=all)
         fi
         df -h
 
@@ -217,9 +203,8 @@ EOF
           echo "错误：$BUILD_DIR 目录不存在"
           exit 1
         fi
-        cd "$BUILD_DIR"
         THREADS=${{ github.event.inputs.compile_threads }}
-        make download -j$THREADS
+        (cd "$BUILD_DIR" && make download -j$THREADS)
         echo "软件包下载完成"
 
     - name: 编译固件
@@ -228,7 +213,6 @@ EOF
           echo "错误：$BUILD_DIR 目录不存在"
           exit 1
         fi
-        cd "$BUILD_DIR"
         THREADS=${{ github.event.inputs.compile_threads }}
         echo "开始编译..."
         echo "当前磁盘空间:"
@@ -237,11 +221,10 @@ EOF
         # 使用更保守的编译策略
         if [ "$THREADS" = "2" ]; then
           echo "使用2线程编译"
-          # 先尝试并行编译，失败则降级
-          make -j2 || make -j1 V=s
+          (cd "$BUILD_DIR" && make -j2) || (cd "$BUILD_DIR" && make -j1 V=s)
         else
           echo "使用单线程编译"
-          make -j1 V=s
+          (cd "$BUILD_DIR" && make -j1 V=s)
         fi
         
         echo "编译完成"
@@ -252,9 +235,8 @@ EOF
           echo "错误：$BUILD_DIR 目录不存在"
           exit 1
         fi
-        cd "$BUILD_DIR"
         echo "查找生成的固件文件:"
-        find bin/targets/ -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" \) 2>/dev/null | head -10 || echo "未找到固件文件"
+        find "$BUILD_DIR/bin/targets/" -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" \) 2>/dev/null | head -10 || echo "未找到固件文件"
         echo "最终磁盘空间:"
         df -h
 
@@ -263,7 +245,7 @@ EOF
       uses: actions/upload-artifact@v4
       with:
         name: 栋仔固件
-        path: $BUILD_DIR/bin/targets/**/*
+        path: ${{ env.BUILD_DIR }}/bin/targets/**/*
         retention-days: 30
 
     - name: 完成提示
