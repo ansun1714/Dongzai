@@ -67,8 +67,9 @@ jobs:
           echo "错误：$BUILD_DIR 目录不存在"
           exit 1
         fi
-        (cd "$BUILD_DIR" && ./scripts/feeds update -a)
-        (cd "$BUILD_DIR" && ./scripts/feeds install -a)
+        # 直接使用完整路径执行命令
+        $BUILD_DIR/scripts/feeds update -a
+        $BUILD_DIR/scripts/feeds install -a
         echo "软件源更新完成"
 
     - name: 处理Node.js问题
@@ -182,7 +183,8 @@ EOF
         echo "# CONFIG_BUILD_NLS is not set" >> "$BUILD_DIR/.config"
         echo "CONFIG_CLEAN_IPKG=y" >> "$BUILD_DIR/.config"
         
-        (cd "$BUILD_DIR" && make defconfig)
+        # 直接使用完整路径执行make命令
+        make -C "$BUILD_DIR" defconfig
         echo "配置应用完成"
 
     - name: 磁盘空间检查（编译前）
@@ -193,7 +195,7 @@ EOF
         sudo rm -rf /var/cache/apt/archives
         sudo rm -rf /tmp/*
         if [ -d "$BUILD_DIR/.git" ]; then
-          (cd "$BUILD_DIR" && git gc --aggressive --prune=all)
+          git -C "$BUILD_DIR" gc --aggressive --prune=all
         fi
         df -h
 
@@ -204,7 +206,8 @@ EOF
           exit 1
         fi
         THREADS=${{ github.event.inputs.compile_threads }}
-        (cd "$BUILD_DIR" && make download -j$THREADS)
+        # 直接使用完整路径执行make命令
+        make -C "$BUILD_DIR" download -j$THREADS
         echo "软件包下载完成"
 
     - name: 编译固件
@@ -221,10 +224,10 @@ EOF
         # 使用更保守的编译策略
         if [ "$THREADS" = "2" ]; then
           echo "使用2线程编译"
-          (cd "$BUILD_DIR" && make -j2) || (cd "$BUILD_DIR" && make -j1 V=s)
+          make -C "$BUILD_DIR" -j2 || make -C "$BUILD_DIR" -j1 V=s
         else
           echo "使用单线程编译"
-          (cd "$BUILD_DIR" && make -j1 V=s)
+          make -C "$BUILD_DIR" -j1 V=s
         fi
         
         echo "编译完成"
