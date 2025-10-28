@@ -1,4 +1,4 @@
-name: 栋仔主题编译
+name: 🏠 栋仔主题编译 - 无Node版
 
 on:
   workflow_dispatch:
@@ -9,143 +9,125 @@ env:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 240
+    timeout-minutes: 300
 
     steps:
-    - name: 检查代码和配置
+    - name: 📋 初始化检查
       uses: actions/checkout@v4
 
-    - name: 验证必要文件
+    - name: 🔍 验证配置文件
       run: |
-        echo "检查必要文件..."
-        if [ -f ".config" ]; then
-          echo "找到 .config 文件"
-        else
-          echo "错误：缺少 .config 文件"
+        if [ ! -f ".config" ]; then
+          echo "错误：缺少配置文件"
           exit 1
         fi
+        echo "找到配置文件"
 
-    - name: 安装编译环境
+    - name: 🛠️ 安装编译环境
       run: |
-        echo "安装编译工具..."
         sudo apt-get update
         sudo apt-get install -y build-essential git libncurses5-dev libssl-dev python3 unzip wget curl
-        echo "编译环境安装完成"
+        echo "环境安装完成"
 
-    - name: 克隆Lean源码
+    - name: 📥 克隆源码
       run: |
-        echo "克隆 Lean 的 OpenWrt 源码..."
         git clone $REPO_URL lede
         echo "源码克隆完成"
 
-    - name: 更新软件源
+    - name: 🔄 更新软件源
       run: |
         cd lede
-        echo "更新软件源..."
         ./scripts/feeds update -a
         ./scripts/feeds install -a
         echo "软件源更新完成"
 
-    - name: 创建主题目录结构
+    - name: 🚫 彻底移除Node.js包
       run: |
         cd lede
-        echo "创建主题目录结构..."
+        echo "彻底移除Node.js相关包..."
+        
+        # 从feeds中移除node包
+        if [ -d "feeds/packages/lang/node" ]; then
+          rm -rf feeds/packages/lang/node
+          echo "移除 feeds/packages/lang/node"
+        fi
+        
+        # 从package目录移除node包
+        if [ -d "package/feeds/packages/node" ]; then
+          rm -rf package/feeds/packages/node
+          echo "移除 package/feeds/packages/node"
+        fi
+        
+        # 创建空的node目录避免错误
+        mkdir -p feeds/packages/lang/node
+        echo "创建空node目录"
+
+    - name: 🎨 部署栋仔主题
+      run: |
+        cd lede
         mkdir -p package/lean/dongzhai-theme/luci-theme-dongzhai/files/www/luci-static/dongzhai/css
-        echo "目录结构创建完成"
+        
+        # 简单Makefile
+        cat > package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile << 'EOF'
+include $(TOPDIR)/rules.mk
+LUCI_TITLE:=栋仔主题
+PKG_VERSION:=1.0
+PKG_RELEASE:=1
+include $(INCLUDE_DIR)/package.mk
+define Package/luci-theme-dongzhai
+  $(call Package/luci/webtemplate)
+  TITLE:=栋仔主题
+endef
+define Build/Configure
+endef
+define Build/Compile
+endef
+define Package/luci-theme-dongzhai/install
+	$(INSTALL_DIR) $(1)/www/luci-static/dongzhai
+endef
+$(eval $(call BuildPackage,luci-theme-dongzhai))
+EOF
+        
+        echo "主题部署完成"
 
-    - name: 创建主题Makefile
+    - name: ⚙️ 应用配置
       run: |
         cd lede
-        echo "创建主题Makefile..."
-        
-        # 逐行写入Makefile内容
-        echo "include \$(TOPDIR)/rules.mk" > package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "LUCI_TITLE:=栋仔个性化主题" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "LUCI_DEPENDS:=" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "PKG_VERSION:=1.0" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "PKG_RELEASE:=1" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "include \$(INCLUDE_DIR)/package.mk" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "define Package/luci-theme-dongzhai" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "  \$(call Package/luci/webtemplate)" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "  TITLE:=栋仔个性化主题" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "  DEPENDS:=+luci-compat" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "endef" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "define Package/luci-theme-dongzhai/description" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "  栋仔个性化主题" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "endef" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "define Build/Configure" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "endef" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "define Build/Compile" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "endef" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "define Package/luci-theme-dongzhai/install" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "	\$(INSTALL_DIR) \$(1)/www/luci-static/dongzhai" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "	[ -d ./files ] && \$(CP) ./files/* \$(1)/www/luci-static/dongzhai/" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "endef" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        echo "\$(eval \$(call BuildPackage,luci-theme-dongzhai))" >> package/lean/dongzhai-theme/luci-theme-dongzhai/Makefile
-        
-        echo "Makefile创建完成"
-
-    - name: 创建主题CSS文件
-      run: |
-        cd lede
-        echo "创建主题CSS文件..."
-        
-        # 创建CSS文件
-        echo "/* 栋仔个性化主题样式 */" > package/lean/dongzhai-theme/luci-theme-dongzhai/files/www/luci-static/dongzhai/css/style.css
-        echo ".header .fill .brand {" >> package/lean/dongzhai-theme/luci-theme-dongzhai/files/www/luci-static/dongzhai/css/style.css
-        echo "    color: #ff6600;" >> package/lean/dongzhai-theme/luci-theme-dongzhai/files/www/luci-static/dongzhai/css/style.css
-        echo "    font-weight: bold;" >> package/lean/dongzhai-theme/luci-theme-dongzhai/files/www/luci-static/dongzhai/css/style.css
-        echo "}" >> package/lean/dongzhai-theme/luci-theme-dongzhai/files/www/luci-static/dongzhai/css/style.css
-        
-        echo "CSS文件创建完成"
-
-    - name: 应用配置
-      run: |
-        cd lede
-        echo "应用编译配置..."
-        
-        # 复制用户配置文件
         cp ../.config .config
         
-        # 确保栋仔主题被启用
+        # 强制禁用所有node相关配置
+        grep -v "CONFIG_PACKAGE_node" .config > .config.tmp
+        mv .config.tmp .config
+        echo "# CONFIG_PACKAGE_node is not set" >> .config
+        echo "# CONFIG_PACKAGE_node-npm is not set" >> .config
+        echo "# CONFIG_PACKAGE_node-yarn is not set" >> .config
+        
         echo "CONFIG_PACKAGE_luci-theme-dongzhai=y" >> .config
         echo "CONFIG_DEFAULT_luci-theme-dongzhai=y" >> .config
         
         make defconfig
         echo "配置应用完成"
 
-    - name: 下载软件包
+    - name: 📦 下载软件包
       run: |
         cd lede
-        echo "下载软件包..."
-        make download -j2
+        make download -j1
         echo "软件包下载完成"
 
-    - name: 编译固件
+    - name: 🔨 编译固件
       run: |
         cd lede
-        echo "开始编译固件..."
-        echo "这可能需要 2-4 小时..."
-        make -j2
+        echo "开始编译..."
+        make -j1 V=s
         echo "编译完成"
 
-    - name: 上传固件
+    - name: 📤 上传结果
       uses: actions/upload-artifact@v4
       with:
-        name: 栋仔主题固件
+        name: 栋仔固件
         path: lede/bin/targets/**/*.bin
         retention-days: 30
 
-    - name: 编译完成通知
-      if: success()
+    - name: ✅ 完成提示
       run: |
-        echo "编译成功完成！"
-        echo "固件已上传到 Artifacts"
+        echo "编译完成"
