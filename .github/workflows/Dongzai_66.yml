@@ -97,7 +97,9 @@ jobs:
           echo "错误：主题目录不存在"
           exit 1
         fi
-        cat > "$THEME_DIR/Makefile" << 'EOF'
+        
+        # 使用更简单的方法创建Makefile
+        cat > "$THEME_DIR/Makefile" << 'MAKEFILE_EOF'
 include $(TOPDIR)/rules.mk
 
 LUCI_TITLE:=栋仔主题
@@ -129,7 +131,7 @@ define Package/luci-theme-dongzhai/install
 endef
 
 $(eval $(call BuildPackage,luci-theme-dongzhai))
-EOF
+MAKEFILE_EOF
         echo "主题Makefile创建完成"
 
     - name: 创建主题CSS
@@ -139,7 +141,9 @@ EOF
           echo "错误：CSS目录不存在"
           exit 1
         fi
-        cat > "$CSS_DIR/style.css" << 'EOF'
+        
+        # 使用更简单的方法创建CSS
+        cat > "$CSS_DIR/style.css" << 'CSS_EOF'
 /* 栋仔主题样式 */
 .header .fill .brand {
     color: #ff6600;
@@ -156,7 +160,7 @@ EOF
     background-color: #ff6600;
     border-color: #ff6600;
 }
-EOF
+CSS_EOF
         echo "主题CSS创建完成"
 
     - name: 应用配置
