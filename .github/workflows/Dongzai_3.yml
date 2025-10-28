@@ -1,0 +1,525 @@
+name: 🏠 栋仔主题个性化固件编译3
+
+on:
+  workflow_dispatch:
+    inputs:
+      clean_build:
+        description: '是否清理重新编译'
+        required: false
+        default: false
+        type: boolean
+      compile_threads:
+        description: '编译线程数 (推荐1-2)'
+        required: false
+        default: 1
+        type: choice
+        options:
+        - 1
+        - 2
+
+env:
+  REPO_URL: https://github.com/coolsnowwolf/lede
+  BUILD_DIR: lede
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360  # 6小时超时
+
+    steps:
+    - name: 📋 初始化检查
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    - name: 🔍 验证配置文件
+      id: config_check
+      run: |
+        echo "=== 配置文件验证 ==="
+        if [ ! -f ".config" ]; then
+          echo "❌ 错误：未找到 .config 文件"
+          echo "请在仓库根目录创建 .config 文件来指定设备配置"
+          exit 1
+        fi
+        
+        CONFIG_LINES=$(wc -l < .config)
+        echo "✅ 找到配置文件 (.config)，包含 $CONFIG_LINES 行配置"
+        
+        # 显示关键配置信息
+        echo ""
+        echo "=== 配置摘要 ==="
+        echo "目标平台: $(grep 'CONFIG_TARGET_[^=]*=y' .config | head -1 | sed 's/CONFIG_//' || echo '未设置')"
+        echo "目标设备: $(grep 'CONFIG_TARGET.*DEVICE.*=y' .config | head -1 | sed 's/CONFIG_//' || echo '未设置')"
+        echo "LuCI界面: $(grep 'CONFIG_PACKAGE_luci=y' .config && echo '启用' || echo '禁用')"
+        
+        # 检查Node.js状态
+        if grep -q "# CONFIG_PACKAGE_node is not set" .config; then
+          echo "✅ Node.js 已禁用"
+        else
+          echo "⚠️  Node.js 未明确禁用，将在后续步骤中处理"
+        fi
+
+    - name: 🛠️ 安装编译环境
+      run: |
+        echo "=== 安装编译工具链 ==="
+        start_time=$(date +%s)
+        
+        sudo apt-get update
+        echo "📦 安装基础编译工具..."
+        sudo apt-get install -y \
+          build-essential \
+          ccache \
+          git \
+          libncurses5-dev \
+          libssl-dev \
+          python3 \
+          unzip \
+          wget \
+          curl \
+          rsync \
+          file \
+          gawk \
+          gettext \
+          zlib1g-dev
+        
+        # 安装完整工具链
+        echo "📦 安装完整OpenWrt编译工具..."
+        sudo apt-get install -y \
+          subversion \
+          flex \
+          uglifyjs \
+          gcc-multilib \
+          p7zip-full \
+          msmtp \
+          texinfo \
+          libglib2.0-dev \
+          xmlto \
+          upx \
+          libelf-dev \
+          autoconf \
+          automake \
+          libtool \
+          autopoint \
+          device-tree-compiler
+        
+        end_time=$(date +%s)
+        duration=$((end_time - start_time))
+        echo "✅ 环境安装完成 (耗时: ${duration}秒)"
+
+    - name: 📥 克隆Lean源码
+      run: |
+        echo "=== 克隆OpenWrt源码 ==="
+        
+        if [ -d "$BUILD_DIR" ] && [ "${{ github.event.inputs.clean_build }}" = "true" ]; then
+          echo "🧹 清理旧编译目录..."
+          rm -rf $BUILD_DIR
+        fi
+        
+        if [ ! -d "$BUILD_DIR" ]; then
+          echo "📥 从 Lean 仓库克隆源码..."
+          git clone --depth 1 $REPO_URL $BUILD_DIR
+          echo "✅ 源码克隆完成"
+        else
+          echo "✅ 使用现有源码目录"
+        fi
+
+    - name: 🔄 更新软件源
+      run: |
+        cd $BUILD_DIR
+        echo "=== 更新软件源和包 ==="
+        
+        echo "🔄 更新软件源..."
+        ./scripts/feeds update -a
+        echo "📦 安装软件包..."
+        ./scripts/feeds install -a
+        echo "✅ 软件源更新完成"
+
+    - name: 🚫 彻底处理Node.js问题
+      run: |
+        cd $BUILD_DIR
+        echo "=== 彻底处理Node.js编译问题 ==="
+        
+        # 方法1: 从feeds中移除node包
+        echo "🗑️  从feeds中移除Node.js包..."
+        if [ -d "feeds/packages/lang/node" ]; then
+          rm -rf feeds/packages/lang/node
+          echo "✅ 移除 feeds/packages/lang/node"
+        fi
+        
+        # 方法2: 确保package目录中也没有node
+        if [ -d "package/feeds/packages/node" ]; then
+          rm -rf package/feeds/packages/node
+          echo "✅ 移除 package/feeds/packages/node"
+        fi
+        
+        # 方法3: 创建空的node目录避免依赖错误
+        mkdir -p feeds/packages/lang/node
+        touch feeds/packages/lang/node/Makefile
+        echo "✅ 创建空Node.js目录避免依赖错误"
+        
+        # 方法4: 检查是否有其他包依赖node
+        echo "🔍 检查可能依赖Node.js的包..."
+        find feeds packages -name "Makefile" -type f -exec grep -l "node\|npm" {} \; | head -5 || echo "未找到明显依赖"
+
+    - name: 🎨 部署栋仔主题
+      run: |
+        cd $BUILD_DIR
+        echo "=== 部署个性化主题 ==="
+        
+        THEME_DIR="package/lean/dongzhai-theme/luci-theme-dongzhai"
+        
+        # 创建主题目录结构
+        echo "📁 创建主题目录..."
+        mkdir -p $THEME_DIR/files/www/luci-static/dongzhai/css
+        
+        # 创建主题Makefile
+        echo "📝 创建主题编译配置..."
+        cat > $THEME_DIR/Makefile << 'EOF'
+include $(TOPDIR)/rules.mk
+
+LUCI_TITLE:=栋仔个性化主题
+LUCI_DEPENDS:=
+PKG_VERSION:=1.0
+PKG_RELEASE:=1
+
+include $(INCLUDE_DIR)/package.mk
+
+define Package/luci-theme-dongzhai
+  $(call Package/luci/webtemplate)
+  TITLE:=栋仔个性化主题
+  DEPENDS:=+luci-compat
+endef
+
+define Package/luci-theme-dongzhai/description
+  栋仔个性化主题 - 专为个性化定制
+endef
+
+define Build/Configure
+endef
+
+define Build/Compile
+endef
+
+define Package/luci-theme-dongzhai/install
+	$(INSTALL_DIR) $(1)/www/luci-static/dongzhai
+	[ -d ./files ] && $(CP) ./files/* $(1)/www/luci-static/dongzhai/
+endef
+
+$(eval $(call BuildPackage,luci-theme-dongzhai))
+EOF
+
+        # 创建主题样式文件
+        echo "🎨 创建主题样式..."
+        cat > $THEME_DIR/files/www/luci-static/dongzhai/css/style.css << 'EOF'
+/* 栋仔个性化主题样式 */
+.header .fill .brand {
+    color: #ff6600;
+    font-weight: bold;
+    font-size: 18px;
+}
+
+.sidebar {
+    background: #2c3e50;
+}
+
+.sidebar .nav > li > a {
+    color: #ecf0f1;
+}
+
+.btn-primary {
+    background-color: #ff6600;
+    border-color: #ff6600;
+}
+
+.dongzhai-badge {
+    background: #e74c3c;
+    color: white;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 12px;
+    margin-left: 5px;
+}
+EOF
+
+        echo "✅ 栋仔主题部署完成"
+
+    - name: ⚙️ 应用编译配置（彻底禁用Node.js）
+      run: |
+        cd $BUILD_DIR
+        echo "=== 应用编译配置 ==="
+        
+        # 复制用户配置文件
+        echo "📄 应用用户配置..."
+        cp ../.config .config
+        
+        # 彻底禁用所有Node.js相关配置
+        echo "🚫 彻底禁用Node.js和相关包..."
+        
+        # 先备份原始配置
+        cp .config .config.backup
+        
+        # 方法1: 移除所有node相关配置
+        grep -v "CONFIG_PACKAGE_node" .config > .config.tmp
+        mv .config.tmp .config
+        
+        # 方法2: 明确禁用所有node相关包
+        {
+          echo ""
+          echo "# =========================================="
+          echo "# 彻底禁用 Node.js 和相关包（自动添加）"
+          echo "# =========================================="
+          echo "# CONFIG_PACKAGE_node is not set"
+          echo "# CONFIG_PACKAGE_node-npm is not set"
+          echo "# CONFIG_PACKAGE_node-yarn is not set"
+          echo "# CONFIG_PACKAGE_node-host is not set"
+          echo "# CONFIG_PACKAGE_node-arduino-fs is not set"
+          echo "# CONFIG_PACKAGE_node-cyassl is not set"
+          echo "# CONFIG_PACKAGE_node-evented-io is not set"
+          echo "# CONFIG_PACKAGE_node-ftp is not set"
+          echo "# CONFIG_PACKAGE_node-hid is not set"
+          echo "# CONFIG_PACKAGE_node-http-form-data is not set"
+          echo "# CONFIG_PACKAGE_node-http-proxy is not set"
+          echo "# CONFIG_PACKAGE_node-http-signature is not set"
+          echo "# CONFIG_PACKAGE_node-jscoverage is not set"
+          echo "# CONFIG_PACKAGE_node-nanomsg is not set"
+          echo "# CONFIG_PACKAGE_node-serialport is not set"
+          echo "# CONFIG_PACKAGE_node-tar is not set"
+          echo "# CONFIG_PACKAGE_node-utf8 is not set"
+          echo "# CONFIG_PACKAGE_node-zmq is not set"
+          echo ""
+        } >> .config
+        
+        # 确保栋仔主题配置
+        echo "🎨 配置栋仔主题..."
+        if ! grep -q "CONFIG_PACKAGE_luci-theme-dongzhai=y" .config; then
+          echo "CONFIG_PACKAGE_luci-theme-dongzhai=y" >> .config
+          echo "✅ 添加栋仔主题编译选项"
+        fi
+        
+        # 设置默认主题
+        if grep -q "CONFIG_PACKAGE_luci=y" .config; then
+          grep -v "CONFIG_DEFAULT_luci-theme" .config > .config.tmp
+          mv .config.tmp .config
+          echo "CONFIG_DEFAULT_luci-theme-dongzhai=y" >> .config
+          echo "✅ 设置栋仔主题为默认"
+        fi
+        
+        # 应用配置
+        echo "🔧 应用最终配置..."
+        make defconfig
+        
+        # 验证Node.js确实被禁用
+        echo ""
+        echo "=== Node.js 禁用验证 ==="
+        NODE_CONFIGS=$(grep "CONFIG_PACKAGE_node" .config || true)
+        if [ -n "$NODE_CONFIGS" ]; then
+          echo "❌ 发现以下Node.js相关配置："
+          echo "$NODE_CONFIGS"
+          echo "正在强制处理..."
+          # 再次强制禁用
+          grep -v "CONFIG_PACKAGE_node" .config > .config.tmp
+          mv .config.tmp .config
+          echo "# CONFIG_PACKAGE_node is not set" >> .config
+          make defconfig
+          echo "✅ 已强制处理Node.js配置"
+        else
+          echo "✅ Node.js 已彻底禁用"
+        fi
+        
+        # 显示最终配置摘要
+        echo ""
+        echo "=== 最终配置摘要 ==="
+        echo "目标设备: $(grep 'CONFIG_TARGET.*DEVICE.*=y' .config | head -1 || echo '未设置')"
+        echo "启用主题: $(grep 'CONFIG_PACKAGE_luci-theme' .config | grep '=y' | head -3 || echo '无')"
+        echo "Node.js状态: 已彻底禁用"
+
+    - name: 📦 下载软件包
+      run: |
+        cd $BUILD_DIR
+        echo "=== 下载依赖软件包 ==="
+        
+        THREADS=${{ github.event.inputs.compile_threads || 1 }}
+        echo "🧵 使用 $THREADS 个线程下载..."
+        
+        start_time=$(date +%s)
+        make download -j$THREADS
+        end_time=$(date +%s)
+        duration=$((end_time - start_time))
+        
+        # 统计下载结果
+        PKG_COUNT=$(find dl -name "*.tar.*" -o -name "*.zip" -o -name "*.bin" 2>/dev/null | wc -l || echo "0")
+        echo "✅ 软件包下载完成 (耗时: ${duration}秒, 包数量: ${PKG_COUNT})"
+
+    - name: 🔨 编译固件
+      run: |
+        cd $BUILD_DIR
+        echo "=== 开始编译固件 ==="
+        
+        THREADS=${{ github.event.inputs.compile_threads || 1 }}
+        echo "⚡ 使用 $THREADS 个线程编译..."
+        echo "⏰ 预计需要 2-4 小时，请耐心等待..."
+        
+        # 显示开始时间
+        start_time=$(date +%s)
+        echo "🕐 编译开始时间: $(date)"
+        
+        # 编译固件（使用详细输出以便调试）
+        if [ "$THREADS" = "1" ]; then
+          echo "🔍 使用单线程详细编译..."
+          make -j1 V=s
+        else
+          echo "⚡ 使用多线程编译..."
+          make -j$THREADS
+        fi
+        
+        # 显示结束时间和耗时
+        end_time=$(date +%s)
+        duration=$((end_time - start_time))
+        hours=$((duration / 3600))
+        minutes=$(( (duration % 3600) / 60 ))
+        seconds=$((duration % 60))
+        
+        echo "✅ 编译完成!"
+        echo "⏱️  总编译时间: ${hours}小时 ${minutes}分钟 ${seconds}秒"
+
+    - name: 📤 收集编译结果
+      id: collect_firmware
+      run: |
+        cd $BUILD_DIR/bin/targets
+        echo "=== 收集编译结果 ==="
+        
+        # 查找所有固件文件
+        FIRMWARE_FILES=$(find . -name "*.bin" -type f)
+        
+        if [ -n "$FIRMWARE_FILES" ]; then
+          echo "🎉 找到以下固件文件:"
+          TOTAL_SIZE=0
+          FILE_COUNT=0
+          
+          for file in $FIRMWARE_FILES; do
+            if [ -f "$file" ]; then
+              size=$(du -h "$file" | cut -f1)
+              file_size=$(du -b "$file" | cut -f1)
+              TOTAL_SIZE=$((TOTAL_SIZE + file_size))
+              FILE_COUNT=$((FILE_COUNT + 1))
+              echo "  📄 $file ($size)"
+            fi
+          done
+          
+          # 计算总大小
+          if [ $TOTAL_SIZE -gt 1048576 ]; then
+            TOTAL_SIZE_HR=$(echo "scale=2; $TOTAL_SIZE/1048576" | bc)
+            SIZE_UNIT="MB"
+          else
+            TOTAL_SIZE_HR=$(echo "scale=2; $TOTAL_SIZE/1024" | bc)
+            SIZE_UNIT="KB"
+          fi
+          
+          # 提取设备信息
+          FIRST_FILE=$(echo "$FIRMWARE_FILES" | head -1)
+          DEVICE_INFO=$(echo "$FIRMWARE_FILES" | head -1 | grep -o 'targets/[^/]*/[^/]*' | cut -d'/' -f2-3 | tr '/' '_')
+          
+          echo "has_firmware=true" >> $GITHUB_OUTPUT
+          echo "firmware_count=$FILE_COUNT" >> $GITHUB_OUTPUT
+          echo "total_size=${TOTAL_SIZE_HR}${SIZE_UNIT}" >> $GITHUB_OUTPUT
+          echo "device_info=$DEVICE_INFO" >> $GITHUB_ENV
+          
+          echo ""
+          echo "📊 编译统计:"
+          echo "  • 固件数量: $FILE_COUNT 个"
+          echo "  • 总大小: ${TOTAL_SIZE_HR}${SIZE_UNIT}"
+          echo "  • 设备平台: $DEVICE_INFO"
+          
+        else
+          echo "❌ 未找到固件文件!"
+          echo "当前目录内容:"
+          find . -type f | head -10
+          echo "has_firmware=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: 📎 上传固件到Artifacts
+      if: steps.collect_firmware.outputs.has_firmware == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: 🏠栋仔固件_${{ env.device_info }}
+        path: ${{ env.BUILD_DIR }}/bin/targets/**/*.bin
+        retention-days: 30
+        compression-level: 9
+
+    - name: 🚀 创建版本发布
+      if: steps.collect_firmware.outputs.has_firmware == 'true'
+      uses: softprops/action-gh-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: dongzhai-${{ env.device_info }}-$(date +%Y%m%d)
+        name: 🏠 栋仔主题固件 - ${{ env.device_info }}
+        body: |
+          # 🏠 栋仔主题个性化固件
+          
+          ## 📋 编译信息
+          - **设备平台**: ${{ env.device_info }}
+          - **编译时间**: $(date)
+          - **源码版本**: Lean's OpenWrt
+          - **固件数量**: ${{ steps.collect_firmware.outputs.firmware_count }} 个
+          - **总大小**: ${{ steps.collect_firmware.outputs.total_size }}
+          - **特色**: 彻底禁用Node.js避免编译错误
+          
+          ## 🎨 主题特色
+          - ✨ **栋仔个性化主题界面**
+          - 🎯 **优化的用户体验**
+          - 🚫 **彻底禁用Node.js确保编译成功**
+          
+          ## 🔄 刷机说明
+          1. **首次刷机**: 使用 `factory.bin` 文件
+          2. **系统升级**: 使用 `sysupgrade.bin` 文件
+          3. **刷机前请备份**重要配置和数据
+          
+          ## ⚠️ 注意事项
+          - 确保选择正确的设备型号固件
+          - 刷机有风险，操作需谨慎
+          
+          ---
+          *由 GitHub Actions 自动编译生成*
+        files: ${{ env.BUILD_DIR }}/bin/targets/**/*.bin
+        draft: false
+        prerelease: false
+
+    - name: 📊 编译总结报告
+      if: always()
+      run: |
+        echo ""
+        echo "================================================"
+        echo "              🏁 编译任务完成报告"
+        echo "================================================"
+        
+        if [ "${{ success() }}" = "true" ]; then
+          if [ "${{ steps.collect_firmware.outputs.has_firmware }}" = "true" ]; then
+            echo "🎉 ✅ 编译成功!"
+            echo ""
+            echo "📦 输出结果:"
+            echo "  • 固件数量: ${{ steps.collect_firmware.outputs.firmware_count }} 个"
+            echo "  • 文件大小: ${{ steps.collect_firmware.outputs.total_size }}"
+            echo "  • 设备平台: ${{ env.device_info }}"
+            echo ""
+            echo "📥 下载位置:"
+            echo "  • 📎 Actions → Artifacts → 🏠栋仔固件_${{ env.device_info }}"
+            echo "  • 🚀 Releases → 🏠 栋仔主题固件 - ${{ env.device_info }}"
+            echo ""
+            echo "💡 特色: 彻底禁用Node.js，编译稳定性提升"
+          else
+            echo "⚠️ 编译过程完成但未生成固件文件"
+            echo "请检查编译配置和设备支持"
+          fi
+        else
+            echo "❌ 编译失败!"
+            echo ""
+            echo "🔧 建议排查步骤:"
+            echo "  1. 检查 .config 文件配置是否正确"
+            echo "  2. 查看详细编译日志定位错误"
+            echo "  3. 确认设备型号支持"
+        fi
+        
+        echo "================================================"
+        echo "结束时间: $(date)"
+        echo "================================================"
