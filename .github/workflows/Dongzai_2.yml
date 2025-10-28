@@ -1,0 +1,577 @@
+name: 🏠 栋仔主题个性化固件编译
+
+on:
+  workflow_dispatch:
+    inputs:
+      clean_build:
+        description: '是否清理重新编译'
+        required: false
+        default: false
+        type: boolean
+      compile_threads:
+        description: '编译线程数 (1-4)'
+        required: false
+        default: 2
+        type: choice
+        options:
+        - 1
+        - 2
+        - 3
+        - 4
+
+env:
+  REPO_URL: https://github.com/coolsnowwolf/lede
+  BUILD_DIR: lede
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360  # 6小时超时
+
+    steps:
+    - name: 📋 初始化检查
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    - name: 🔍 验证配置文件
+      id: config_check
+      run: |
+        echo "=== 配置文件验证 ==="
+        if [ ! -f ".config" ]; then
+          echo "❌ 错误：未找到 .config 文件"
+          echo "请在仓库根目录创建 .config 文件来指定设备配置"
+          exit 1
+        fi
+        
+        CONFIG_LINES=$(wc -l < .config)
+        echo "✅ 找到配置文件 (.config)，包含 $CONFIG_LINES 行配置"
+        
+        # 显示关键配置信息
+        echo ""
+        echo "=== 配置摘要 ==="
+        echo "目标平台: $(grep 'CONFIG_TARGET_[^=]*=y' .config | head -1 | sed 's/CONFIG_//')"
+        echo "目标设备: $(grep 'CONFIG_TARGET.*DEVICE.*=y' .config | head -1 | sed 's/CONFIG_//')"
+        echo "架构信息: $(grep 'CONFIG_TARGET_ARCH' .config | head -1 | sed 's/CONFIG_//')"
+        echo "LuCI界面: $(grep 'CONFIG_PACKAGE_luci=y' .config && echo '启用' || echo '禁用')"
+        
+        # 检查是否禁用了Node.js
+        if grep -q "# CONFIG_PACKAGE_node is not set" .config; then
+          echo "✅ Node.js 已禁用（避免编译错误）"
+        else
+          echo "⚠️  建议在配置中禁用 Node.js 以避免编译错误"
+        fi
+
+    - name: 🛠️ 安装编译环境
+      run: |
+        echo "=== 安装编译工具链 ==="
+        start_time=$(date +%s)
+        
+        sudo apt-get update
+        echo "📦 安装基础编译工具..."
+        sudo apt-get install -y \
+          build-essential \
+          ccache \
+          git \
+          libncurses5-dev \
+          libssl-dev \
+          python3 \
+          python3-pip \
+          unzip \
+          wget \
+          curl \
+          rsync \
+          file \
+          gawk \
+          gettext \
+          zlib1g-dev
+        
+        # 安装完整工具链（可选，但更完整）
+        echo "📦 安装完整OpenWrt编译工具..."
+        sudo apt-get install -y \
+          subversion \
+          flex \
+          uglifyjs \
+          gcc-multilib \
+          p7zip-full \
+          msmtp \
+          texinfo \
+          libglib2.0-dev \
+          xmlto \
+          upx \
+          libelf-dev \
+          autoconf \
+          automake \
+          libtool \
+          autopoint \
+          device-tree-compiler \
+          g++-multilib \
+          antlr3 \
+          gperf
+        
+        end_time=$(date +%s)
+        duration=$((end_time - start_time))
+        echo "✅ 环境安装完成 (耗时: ${duration}秒)"
+
+    - name: 📥 克隆Lean源码
+      run: |
+        echo "=== 克隆OpenWrt源码 ==="
+        
+        if [ -d "$BUILD_DIR" ] && [ "${{ github.event.inputs.clean_build }}" = "true" ]; then
+          echo "🧹 清理旧编译目录..."
+          rm -rf $BUILD_DIR
+        fi
+        
+        if [ ! -d "$BUILD_DIR" ]; then
+          echo "📥 从 Lean 仓库克隆源码..."
+          git clone --depth 1 $REPO_URL $BUILD_DIR
+          echo "✅ 源码克隆完成"
+        else
+          echo "✅ 使用现有源码目录"
+        fi
+
+    - name: 🔄 更新软件源
+      run: |
+        cd $BUILD_DIR
+        echo "=== 更新软件源和包 ==="
+        
+        echo "🔄 更新软件源..."
+        ./scripts/feeds update -a
+        echo "📦 安装软件包..."
+        ./scripts/feeds install -a
+        echo "✅ 软件源更新完成"
+
+    - name: 🎨 部署栋仔主题
+      run: |
+        cd $BUILD_DIR
+        echo "=== 部署个性化主题 ==="
+        
+        THEME_DIR="package/lean/dongzhai-theme/luci-theme-dongzhai"
+        
+        # 创建主题目录结构
+        echo "📁 创建主题目录..."
+        mkdir -p $THEME_DIR/files/www/luci-static/dongzhai/{css,js,images}
+        
+        # 创建主题Makefile
+        echo "📝 创建主题编译配置..."
+        cat > $THEME_DIR/Makefile << 'MAKEFILE_EOF'
+include $(TOPDIR)/rules.mk
+
+LUCI_TITLE:=栋仔个性化主题
+LUCI_DEPENDS:=
+PKG_VERSION:=1.0
+PKG_RELEASE:=$(shell date +%Y%m%d)
+
+include $(INCLUDE_DIR)/package.mk
+
+define Package/luci-theme-dongzhai
+  $(call Package/luci/webtemplate)
+  TITLE:=栋仔个性化主题
+  DEPENDS:=+luci-compat
+endef
+
+define Package/luci-theme-dongzhai/description
+  🏠 栋仔个性化主题 - 基于Design主题深度定制
+  特色功能：
+  • 橙色主题配色
+  • 优化移动端体验
+  • 个性化品牌标识
+endef
+
+define Build/Configure
+endef
+
+define Build/Compile
+endef
+
+define Package/luci-theme-dongzhai/install
+	$(INSTALL_DIR) $(1)/www/luci-static/dongzhai
+	$(INSTALL_DIR) $(1)/etc/uci-defaults
+	echo "🏠 栋仔定制固件 - 编译时间: $(shell date "+%Y-%m-%d %H:%M:%S")" > $(1)/etc/dongzhai-version
+	[ -d ./files ] && $(CP) ./files/* $(1)/www/luci-static/dongzhai/
+endef
+
+$(eval $(call BuildPackage,luci-theme-dongzhai))
+MAKEFILE_EOF
+
+        # 创建主题样式文件
+        echo "🎨 创建主题样式..."
+        cat > $THEME_DIR/files/www/luci-static/dongzhai/css/style.css << 'CSS_EOF'
+/* 栋仔个性化主题样式 */
+:root {
+  --dongzhai-primary: #ff6600;
+  --dongzhai-secondary: #e65c00;
+  --dongzhai-accent: #ff8533;
+  --dongzhai-dark: #2c3e50;
+  --dongzhai-light: #ecf0f1;
+}
+
+/* 顶部导航栏 */
+.header .fill .brand {
+  color: var(--dongzhai-primary);
+  font-weight: bold;
+  font-size: 18px;
+}
+
+/* 侧边栏 */
+.sidebar {
+  background: linear-gradient(135deg, var(--dongzhai-dark), #34495e);
+}
+
+.sidebar .nav > li > a {
+  color: var(--dongzhai-light);
+  border-left: 3px solid transparent;
+  transition: all 0.3s ease;
+}
+
+.sidebar .nav > li > a:hover,
+.sidebar .nav > li.active > a {
+  background-color: rgba(255, 255, 255, 0.1);
+  border-left-color: var(--dongzhai-primary);
+}
+
+/* 主按钮 */
+.btn-primary {
+  background-color: var(--dongzhai-primary);
+  border-color: var(--dongzhai-primary);
+  transition: all 0.3s ease;
+}
+
+.btn-primary:hover {
+  background-color: var(--dongzhai-secondary);
+  border-color: var(--dongzhai-secondary);
+  transform: translateY(-1px);
+}
+
+/* 栋仔标识 */
+.dongzhai-badge {
+  background: linear-gradient(45deg, var(--dongzhai-primary), var(--dongzhai-accent));
+  color: white;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  margin-left: 5px;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.7; }
+  100% { opacity: 1; }
+}
+
+/* 移动端优化 */
+@media (max-width: 768px) {
+  .header .brand {
+    font-size: 16px !important;
+  }
+  
+  .dongzhai-badge {
+    font-size: 10px;
+    padding: 1px 6px;
+  }
+}
+
+/* 卡片样式优化 */
+.cbi-section .cbi-section-node-titles {
+  background: linear-gradient(90deg, var(--dongzhai-primary), var(--dongzhai-accent));
+  color: white;
+}
+
+.cbi-tabmenu .cbi-tab {
+  border-bottom: 2px solid transparent;
+}
+
+.cbi-tabmenu .cbi-tab.current {
+  border-bottom-color: var(--dongzhai-primary);
+  color: var(--dongzhai-primary);
+}
+CSS_EOF
+
+        # 创建JavaScript增强（可选）
+        cat > $THEME_DIR/files/www/luci-static/dongzhai/js/enhancements.js << 'JS_EOF'
+// 栋仔主题增强脚本
+document.addEventListener('DOMContentLoaded', function() {
+  // 添加栋仔标识
+  const brand = document.querySelector('.header .fill .brand');
+  if (brand) {
+    brand.innerHTML = '栋仔定制固件 <span class="dongzhai-badge">VIP</span>';
+  }
+  
+  // 添加加载动画
+  const style = document.createElement('style');
+  style.textContent = `
+    .dongzhai-loading {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 3px;
+      background: linear-gradient(90deg, var(--dongzhai-primary), var(--dongzhai-accent));
+      z-index: 9999;
+      animation: loading 2s ease-in-out;
+    }
+    
+    @keyframes loading {
+      0% { width: 0%; }
+      50% { width: 70%; }
+      100% { width: 100%; opacity: 0; }
+    }
+  `;
+  document.head.appendChild(style);
+  
+  const loadingBar = document.createElement('div');
+  loadingBar.className = 'dongzhai-loading';
+  document.body.appendChild(loadingBar);
+  
+  setTimeout(() => {
+    loadingBar.remove();
+  }, 2000);
+  
+  console.log('🏠 栋仔主题加载完成');
+});
+JS_EOF
+
+        echo "✅ 栋仔主题部署完成"
+
+    - name: ⚙️ 应用编译配置
+      run: |
+        cd $BUILD_DIR
+        echo "=== 应用编译配置 ==="
+        
+        # 复制用户配置文件
+        echo "📄 应用用户配置..."
+        cp ../.config .config
+        
+        # 确保栋仔主题配置
+        echo "🎨 配置栋仔主题..."
+        if ! grep -q "CONFIG_PACKAGE_luci-theme-dongzhai=y" .config; then
+          echo "CONFIG_PACKAGE_luci-theme-dongzhai=y" >> .config
+          echo "✅ 添加栋仔主题编译选项"
+        fi
+        
+        # 设置默认主题
+        if grep -q "CONFIG_PACKAGE_luci=y" .config; then
+          grep -v "CONFIG_DEFAULT_luci-theme" .config > .config.tmp
+          mv .config.tmp .config
+          echo "CONFIG_DEFAULT_luci-theme-dongzhai=y" >> .config
+          echo "✅ 设置栋仔主题为默认"
+        fi
+        
+        # 应用配置
+        echo "🔧 应用最终配置..."
+        make defconfig
+        
+        # 显示最终配置摘要
+        echo ""
+        echo "=== 最终配置摘要 ==="
+        echo "目标设备: $(grep 'CONFIG_TARGET.*DEVICE.*=y' .config | head -1)"
+        echo "启用主题: $(grep 'CONFIG_PACKAGE_luci-theme' .config | grep '=y' | head -3)"
+        echo "默认主题: $(grep 'CONFIG_DEFAULT_luci-theme' .config)"
+
+    - name: 📦 下载软件包
+      run: |
+        cd $BUILD_DIR
+        echo "=== 下载依赖软件包 ==="
+        
+        THREADS=${{ github.event.inputs.compile_threads || 2 }}
+        echo "🧵 使用 $THREADS 个线程下载..."
+        
+        start_time=$(date +%s)
+        make download -j$THREADS
+        end_time=$(date +%s)
+        duration=$((end_time - start_time))
+        
+        # 统计下载结果
+        PKG_COUNT=$(find dl -name "*.tar.*" -o -name "*.zip" -o -name "*.bin" 2>/dev/null | wc -l || echo "0")
+        echo "✅ 软件包下载完成 (耗时: ${duration}秒, 包数量: ${PKG_COUNT})"
+
+    - name: 🔨 编译固件
+      run: |
+        cd $BUILD_DIR
+        echo "=== 开始编译固件 ==="
+        
+        THREADS=${{ github.event.inputs.compile_threads || 2 }}
+        echo "⚡ 使用 $THREADS 个线程编译..."
+        echo "⏰ 预计需要 2-4 小时，请耐心等待..."
+        
+        # 显示开始时间
+        start_time=$(date +%s)
+        echo "🕐 编译开始时间: $(date)"
+        
+        # 编译固件
+        make -j$THREADS
+        
+        # 显示结束时间和耗时
+        end_time=$(date +%s)
+        duration=$((end_time - start_time))
+        hours=$((duration / 3600))
+        minutes=$(( (duration % 3600) / 60 ))
+        seconds=$((duration % 60))
+        
+        echo "✅ 编译完成!"
+        echo "⏱️  总编译时间: ${hours}小时 ${minutes}分钟 ${seconds}秒"
+
+    - name: 📤 收集编译结果
+      id: collect_firmware
+      run: |
+        cd $BUILD_DIR/bin/targets
+        echo "=== 收集编译结果 ==="
+        
+        # 查找所有固件文件
+        FIRMWARE_FILES=$(find . -name "*.bin" -type f)
+        
+        if [ -n "$FIRMWARE_FILES" ]; then
+          echo "🎉 找到以下固件文件:"
+          TOTAL_SIZE=0
+          FILE_COUNT=0
+          
+          for file in $FIRMWARE_FILES; do
+            if [ -f "$file" ]; then
+              size=$(du -h "$file" | cut -f1)
+              file_size=$(du -b "$file" | cut -f1)
+              TOTAL_SIZE=$((TOTAL_SIZE + file_size))
+              FILE_COUNT=$((FILE_COUNT + 1))
+              echo "  📄 $file ($size)"
+            fi
+          done
+          
+          # 计算总大小
+          if [ $TOTAL_SIZE -gt 1048576 ]; then
+            TOTAL_SIZE_HR=$(echo "scale=2; $TOTAL_SIZE/1048576" | bc)
+            SIZE_UNIT="MB"
+          else
+            TOTAL_SIZE_HR=$(echo "scale=2; $TOTAL_SIZE/1024" | bc)
+            SIZE_UNIT="KB"
+          fi
+          
+          # 提取设备信息
+          FIRST_FILE=$(echo "$FIRMWARE_FILES" | head -1)
+          DEVICE_INFO=$(echo "$FIRMWARE_FILES" | head -1 | grep -o 'targets/[^/]*/[^/]*' | cut -d'/' -f2-3 | tr '/' '_')
+          
+          echo "has_firmware=true" >> $GITHUB_OUTPUT
+          echo "firmware_count=$FILE_COUNT" >> $GITHUB_OUTPUT
+          echo "total_size=${TOTAL_SIZE_HR}${SIZE_UNIT}" >> $GITHUB_OUTPUT
+          echo "device_info=$DEVICE_INFO" >> $GITHUB_ENV
+          
+          echo ""
+          echo "📊 编译统计:"
+          echo "  • 固件数量: $FILE_COUNT 个"
+          echo "  • 总大小: ${TOTAL_SIZE_HR}${SIZE_UNIT}"
+          echo "  • 设备平台: $DEVICE_INFO"
+          
+        else
+          echo "❌ 未找到固件文件!"
+          echo "当前目录内容:"
+          find . -type f | head -10
+          echo "has_firmware=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: 📎 上传固件到Artifacts
+      if: steps.collect_firmware.outputs.has_firmware == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: 🏠栋仔固件_${{ env.device_info }}
+        path: ${{ env.BUILD_DIR }}/bin/targets/**/*.bin
+        retention-days: 30
+        compression-level: 9
+
+    - name: 🚀 创建版本发布
+      if: steps.collect_firmware.outputs.has_firmware == 'true'
+      uses: softprops/action-gh-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: dongzhai-${{ env.device_info }}-$(date +%Y%m%d)
+        name: 🏠 栋仔主题固件 - ${{ env.device_info }}
+        body: |
+          # 🏠 栋仔主题个性化固件
+          
+          ## 📋 编译信息
+          - **设备平台**: ${{ env.device_info }}
+          - **编译时间**: $(date)
+          - **源码版本**: Lean's OpenWrt (coolsnowwolf/lede)
+          - **固件数量**: ${{ steps.collect_firmware.outputs.firmware_count }} 个
+          - **总大小**: ${{ steps.collect_firmware.outputs.total_size }}
+          
+          ## 🎨 主题特色
+          - ✨ **栋仔个性化主题界面**
+          - 🎯 **优化的用户体验**
+          - 📱 **完善的移动端支持**
+          - 🔧 **基于Lean稳定源码**
+          - 🚀 **性能优化配置**
+          
+          ## 📦 包含功能
+          - 栋仔深度定制主题
+          - 常用网络工具集
+          - 系统管理工具
+          - 橙色主题配色方案
+          
+          ## 🔄 刷机说明
+          1. **首次刷机**: 使用 `factory.bin` 文件
+          2. **系统升级**: 使用 `sysupgrade.bin` 文件
+          3. **刷机前请备份**重要配置和数据
+          
+          ## ⚠️ 注意事项
+          - 确保选择正确的设备型号固件
+          - 刷机有风险，操作需谨慎
+          - 建议在专业人士指导下进行
+          
+          ## 🐛 问题反馈
+          如遇问题，请提交 Issue 并提供：
+          - 设备型号信息
+          - 具体的错误现象
+          - 相关日志信息
+          
+          ---
+          *由 GitHub Actions 自动编译生成*
+        files: ${{ env.BUILD_DIR }}/bin/targets/**/*.bin
+        draft: false
+        prerelease: false
+        discussion_category_name: 'Announcements'
+
+    - name: 📊 编译总结报告
+      if: always()
+      run: |
+        echo ""
+        echo "================================================"
+        echo "              🏁 编译任务完成报告"
+        echo "================================================"
+        
+        if [ "${{ success() }}" = "true" ]; then
+          if [ "${{ steps.collect_firmware.outputs.has_firmware }}" = "true" ]; then
+            echo "🎉 ✅ 编译成功!"
+            echo ""
+            echo "📦 输出结果:"
+            echo "  • 固件数量: ${{ steps.collect_firmware.outputs.firmware_count }} 个"
+            echo "  • 文件大小: ${{ steps.collect_firmware.outputs.total_size }}"
+            echo "  • 设备平台: ${{ env.device_info }}"
+            echo ""
+            echo "📥 下载位置:"
+            echo "  • 📎 Actions → Artifacts → 🏠栋仔固件_${{ env.device_info }}"
+            echo "  • 🚀 Releases → 🏠 栋仔主题固件 - ${{ env.device_info }}"
+          else
+            echo "⚠️ 编译过程完成但未生成固件文件"
+            echo "请检查编译配置和设备支持"
+          fi
+        else
+            echo "❌ 编译失败!"
+            echo ""
+            echo "🔧 建议排查步骤:"
+            echo "  1. 检查 .config 文件配置是否正确"
+            echo "  2. 查看详细编译日志定位错误"
+            echo "  3. 尝试减少编译线程数"
+            echo "  4. 确认设备型号支持"
+        fi
+        
+        echo "================================================"
+        echo "开始时间: $(date -d @${{ job.steps.install_env.outputs.start_time }} 2>/dev/null || echo '未知')"
+        echo "结束时间: $(date)"
+        echo "================================================"
+
+    - name: 💾 清理工作空间
+      if: always()
+      run: |
+        echo "🧹 清理工作空间..."
+        # 保留编译目录以供调试，实际清理由GitHub自动处理
+        echo "✅ 清理完成"
