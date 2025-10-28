@@ -69,7 +69,7 @@ jobs:
           echo "错误：$BUILD_DIR 目录不存在"
           exit 1
         fi
-        cd $BUILD_DIR
+        cd "$BUILD_DIR"
         ./scripts/feeds update -a
         ./scripts/feeds install -a
         echo "软件源更新完成"
@@ -80,7 +80,7 @@ jobs:
           echo "错误：$BUILD_DIR 目录不存在"
           exit 1
         fi
-        cd $BUILD_DIR
+        cd "$BUILD_DIR"
         echo "处理Node.js问题..."
         if [ -d "feeds/packages/lang/node" ]; then
           rm -rf feeds/packages/lang/node
@@ -94,17 +94,17 @@ jobs:
           echo "错误：$BUILD_DIR 目录不存在"
           exit 1
         fi
-        cd $BUILD_DIR
-        mkdir -p package/lean/dongzhai-theme/luci-theme-dongzhai/files/www/luci-static/dongzhai/css
+        mkdir -p "$BUILD_DIR/package/lean/dongzhai-theme/luci-theme-dongzhai/files/www/luci-static/dongzhai/css"
         echo "主题目录创建完成"
 
     - name: 创建主题Makefile
       run: |
-        if [ ! -d "$BUILD_DIR/package/lean/dongzhai-theme/luci-theme-dongzhai" ]; then
+        THEME_DIR="$BUILD_DIR/package/lean/dongzhai-theme/luci-theme-dongzhai"
+        if [ ! -d "$THEME_DIR" ]; then
           echo "错误：主题目录不存在"
           exit 1
         fi
-        cd $BUILD_DIR/package/lean/dongzhai-theme/luci-theme-dongzhai
+        cd "$THEME_DIR"
         cat > Makefile << 'EOF'
 include $(TOPDIR)/rules.mk
 
@@ -174,7 +174,7 @@ EOF
           echo "错误：$BUILD_DIR 目录不存在"
           exit 1
         fi
-        cd $BUILD_DIR
+        cd "$BUILD_DIR"
         cp ../.config .config
         # 添加主题配置
         echo "CONFIG_PACKAGE_luci-theme-dongzhai=y" >> .config
@@ -206,7 +206,7 @@ EOF
         sudo rm -rf /tmp/*
         # 清理Git对象缓存
         if [ -d "$BUILD_DIR/.git" ]; then
-          cd $BUILD_DIR
+          cd "$BUILD_DIR"
           git gc --aggressive --prune=all
         fi
         df -h
@@ -217,7 +217,7 @@ EOF
           echo "错误：$BUILD_DIR 目录不存在"
           exit 1
         fi
-        cd $BUILD_DIR
+        cd "$BUILD_DIR"
         THREADS=${{ github.event.inputs.compile_threads }}
         make download -j$THREADS
         echo "软件包下载完成"
@@ -228,7 +228,7 @@ EOF
           echo "错误：$BUILD_DIR 目录不存在"
           exit 1
         fi
-        cd $BUILD_DIR
+        cd "$BUILD_DIR"
         THREADS=${{ github.event.inputs.compile_threads }}
         echo "开始编译..."
         echo "当前磁盘空间:"
@@ -252,7 +252,7 @@ EOF
           echo "错误：$BUILD_DIR 目录不存在"
           exit 1
         fi
-        cd $BUILD_DIR
+        cd "$BUILD_DIR"
         echo "查找生成的固件文件:"
         find bin/targets/ -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" \) 2>/dev/null | head -10 || echo "未找到固件文件"
         echo "最终磁盘空间:"
