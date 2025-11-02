@@ -1,4 +1,4 @@
-name: 通用OpenWrt编译（优化空间）3
+name: 通用OpenWrt编译（智能磁盘管理）
 
 on:
   workflow_dispatch:
@@ -25,48 +25,57 @@ jobs:
     - name: 检查代码和配置
       uses: actions/checkout@v4
 
-    - name: 深度磁盘空间优化
+    - name: 超深度磁盘空间优化
       run: |
         echo "=== 初始磁盘空间 ==="
         df -h
         
-        # 更彻底的清理
-        sudo apt-get autoremove -y
+        # 超深度清理系统空间
+        echo "执行超深度磁盘清理..."
+        sudo apt-get remove --purge -y '^linux-.*[0-9]*-.*' 2>/dev/null || true
+        sudo apt-get autoremove --purge -y
         sudo apt-get autoclean -y
         sudo rm -rf /var/lib/apt/lists/*
         
-        # 清理系统日志和缓存
-        sudo journalctl --vacuum-time=1d 2>/dev/null || true
-        sudo rm -rf /var/log/*.gz /var/log/*.1 2>/dev/null || true
+        # 清理所有可能的缓存
+        sudo rm -rf /var/cache/apt/archives/*
+        sudo rm -rf /var/cache/debconf/*
+        sudo rm -rf /var/cache/fontconfig/*
         
-        # 清理Docker缓存（如果有）
+        # 清理系统日志（保留最近1小时）
+        sudo journalctl --vacuum-time=1h 2>/dev/null || true
+        sudo find /var/log -name "*.log" -type f -delete 2>/dev/null || true
+        sudo find /var/log -name "*.gz" -type f -delete 2>/dev/null || true
+        
+        # 清理临时文件
+        sudo rm -rf /tmp/* /var/tmp/*
+        
+        # 清理Docker相关（如果有）
         sudo docker system prune -af 2>/dev/null || true
+        sudo rm -rf /var/lib/docker/* 2>/dev/null || true
         
-        # 清理pip和npm缓存
+        # 清理各种编程语言缓存
         pip cache purge 2>/dev/null || true
         npm cache clean --force 2>/dev/null || true
+        gem cleanup 2>/dev/null || true
+        go clean -cache -modcache 2>/dev/null || true
         
-        # 创建更大的交换文件
+        # 创建大容量交换文件
+        echo "创建大容量交换文件..."
         sudo swapoff -a 2>/dev/null || true
-        sudo rm -f /swapfile 2>/dev/null || true
-        sudo dd if=/dev/zero of=/swapfile bs=1G count=4
-        sudo chmod 600 /swapfile
-        sudo mkswap /swapfile
-        sudo swapon /swapfile
+        sudo rm -f /swapfile* 2>/dev/null || true
+        sudo dd if=/dev/zero of=/swapfile1 bs=1G count=2
+        sudo dd if=/dev/zero of=/swapfile2 bs=1G count=2
+        sudo chmod 600 /swapfile1 /swapfile2
+        sudo mkswap /swapfile1
+        sudo mkswap /swapfile2
+        sudo swapon /swapfile1
+        sudo swapon /swapfile2
         
         echo "=== 优化后磁盘空间 ==="
         df -h
         echo "=== 内存和交换空间 ==="
         free -h
-
-    - name: 清理系统缓存
-      run: |
-        echo "清理系统缓存..."
-        sudo apt-get clean
-        sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc 2>/dev/null || true
-        sudo rm -rf /usr/local/lib/node_modules 2>/dev/null || true
-        sudo rm -rf /var/lib/apt/lists/*
-        sudo rm -rf /tmp/*
 
     - name: 验证配置文件
       run: |
@@ -79,49 +88,17 @@ jobs:
         echo "=== 配置文件预览（前30行）==="
         head -30 .config
 
-    - name: 检查配置文件完整性
+    - name: 安装精简编译环境
       run: |
-        echo "🔍 深度检查配置文件..."
-        
-        # 检查基本架构配置
-        if ! grep -q "CONFIG_TARGET_[a-zA-Z]" .config; then
-          echo "❌ 错误：缺少目标架构配置"
-          exit 1
-        fi
-        
-        # 检查内核版本
-        if ! grep -q "CONFIG_LINUX_[0-9]" .config; then
-          echo "⚠️ 警告：可能缺少内核版本配置"
-        fi
-        
-        # 检查关键包
-        CRITICAL_PACKAGES=("base-files" "busybox" "dnsmasq" "dropbear" "firewall" "kmod" "libc" "opkg" "procd" "uci" "ubus")
-        for pkg in "${CRITICAL_PACKAGES[@]}"; do
-          if ! grep -q "CONFIG_PACKAGE_${pkg}=y" .config; then
-            echo "⚠️ 警告：建议包含基础包 $pkg"
-          fi
-        done
-        
-        echo "✅ 配置文件检查完成"
-
-    - name: 安装完整编译环境（含报错解决）
-      run: |
-        echo "安装完整编译环境..."
+        echo "安装精简编译环境..."
         sudo apt-get update
         
-        # 添加Python 2.7支持
-        sudo apt-get install -y software-properties-common
-        sudo add-apt-repository -y ppa:deadsnakes/ppa
-        sudo apt-get update
-        
-        # 安装完整的编译工具链
+        # 只安装最必要的编译工具
         sudo apt-get install -y \
           build-essential \
           git \
           libncurses5-dev \
-          libncursesw5-dev \
           libssl-dev \
-          python2.7 \
           python3 \
           python3-pip \
           unzip \
@@ -147,33 +124,7 @@ jobs:
           rsync \
           subversion \
           texinfo \
-          zlib1g-dev \
-          gperf \
-          antlr3
-        
-        # 创建python2符号链接
-        sudo ln -sf /usr/bin/python2.7 /usr/bin/python2
-        
-        # 解决常见报错：安装缺失的库
-        echo "安装可能缺失的库以防止编译报错..."
-        sudo apt-get install -y \
-          lib32z1-dev \
-          libelf-dev \
-          libc6-dev-i386 \
-          gcc-multilib \
-          g++-multilib \
-          libssl-dev \
-          openssl \
-          ca-certificates
-        
-        # 验证关键工具
-        echo "=== 验证工具版本 ==="
-        gcc --version
-        python2 --version
-        python3 --version
-        openssl version
-        
-        echo "✅ 完整编译环境安装完成"
+          zlib1g-dev
 
     - name: 克隆源码
       run: |
@@ -189,60 +140,7 @@ jobs:
         fi
         echo "✅ 源码克隆完成"
 
-    - name: 应用自定义feeds配置
-      run: |
-        if [ ! -d "$BUILD_DIR" ]; then
-          echo "❌ 错误：$BUILD_DIR 目录不存在"
-          exit 1
-        fi
-        
-        # 检查仓库根目录是否有feeds.conf.default文件
-        if [ -f "feeds.conf.default" ]; then
-          echo "📋 找到自定义的feeds.conf.default，将其复制到编译目录"
-          cp "feeds.conf.default" "$BUILD_DIR/feeds.conf.default"
-          echo "✅ 已应用自定义feeds配置"
-          
-          # 显示feeds配置预览
-          echo "=== feeds配置预览（前20行）==="
-          head -20 "$BUILD_DIR/feeds.conf.default"
-        else
-          echo "ℹ️ 未找到自定义feeds.conf.default，将使用源码默认配置"
-        fi
-
-    - name: 更新软件源
-      run: |
-        if [ ! -d "$BUILD_DIR" ]; then
-          echo "❌ 错误：$BUILD_DIR 目录不存在"
-          exit 1
-        fi
-        cd "$BUILD_DIR"
-        echo "开始更新软件源..."
-        
-        # 多次尝试更新feeds
-        for i in {1..3}; do
-          echo "第 $i 次尝试更新feeds..."
-          if ./scripts/feeds update -a; then
-            echo "✅ feeds更新成功"
-            break
-          else
-            echo "⚠️ 第 $i 次feeds更新失败"
-            if [ $i -eq 3 ]; then
-              echo "❌ feeds更新彻底失败"
-              exit 1
-            fi
-            sleep 5
-          fi
-        done
-        
-        # 安装feeds
-        echo "安装feeds..."
-        if ./scripts/feeds install -a; then
-          echo "✅ feeds安装成功"
-        else
-          echo "⚠️ feeds安装有错误，但继续执行..."
-        fi
-
-    - name: 应用配置
+    - name: 应用配置和精简源码
       run: |
         if [ ! -d "$BUILD_DIR" ]; then
           echo "❌ 错误：$BUILD_DIR 目录不存在"
@@ -251,7 +149,7 @@ jobs:
         
         cd "$BUILD_DIR"
         
-        echo "复制配置文件..."
+        # 应用配置文件
         if [ -f "../.config" ]; then
           cp "../.config" ".config"
           echo "✅ 配置文件复制完成"
@@ -260,178 +158,152 @@ jobs:
           exit 1
         fi
         
-        echo "应用默认配置..."
-        if make defconfig; then
-          echo "✅ 配置应用完成"
-        else
-          echo "❌ 配置应用失败，尝试清理后重试..."
-          make clean
-          make defconfig
-        fi
-
-    - name: 优化编译配置节省空间
-      run: |
-        cd "$BUILD_DIR"
-        echo "优化编译配置以节省磁盘空间..."
-        
-        # 确保启用空间优化选项
-        if grep -q "CONFIG_STRIP=y" .config; then
-          echo "✅ 已启用二进制文件strip"
-        else
-          echo "CONFIG_STRIP=y" >> .config
-        fi
-        
-        # 禁用调试信息
-        if ! grep -q "CONFIG_DEBUG_INFO=n" .config; then
-          echo "CONFIG_DEBUG_INFO=n" >> .config
-        fi
-        
-        # 移除性能分析信息
-        if ! grep -q "CONFIG_USE_MKLIBS=n" .config; then
-          echo "CONFIG_USE_MKLIBS=n" >> .config
-        fi
-        
-        # 重新应用配置
-        make defconfig
-        echo "✅ 编译配置优化完成"
-
-    - name: 预编译检查和修复
-      run: |
-        cd "$BUILD_DIR"
-        echo "🔧 执行预编译检查和修复..."
-        
-        # 检查配置完整性并修复
-        echo "检查配置完整性..."
-        
-        # 确保有文件系统
-        if ! grep -q "CONFIG_TARGET_ROOTFS" .config; then
-          echo "添加默认文件系统配置..."
-          echo "CONFIG_TARGET_ROOTFS_EXT4FS=y" >> .config
-          echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y" >> .config
-        fi
-        
-        # 确保有基础包
-        BASE_PACKAGES=("base-files" "busybox" "dropbear" "firewall" "kmod" "libc" "opkg" "procd" "uci")
-        for pkg in "${BASE_PACKAGES[@]}"; do
-          if ! grep -q "CONFIG_PACKAGE_${pkg}=y" .config; then
-            echo "添加基础包: $pkg"
-            echo "CONFIG_PACKAGE_${pkg}=y" >> .config
-          fi
-        done
-        
-        # 重新应用配置
-        echo "重新应用配置..."
-        make defconfig
-        
-        echo "✅ 预编译检查完成"
-
-    - name: 精简源码和缓存
-      run: |
-        cd "$BUILD_DIR"
-        echo "精简源码文件..."
-        
-        # 删除git历史（如果存在）
+        # 立即精简源码
+        echo "立即精简源码文件..."
         find . -name ".git" -type d -exec rm -rf {} + 2>/dev/null || true
+        find . -name "*.md" -o -name "*.txt" -o -name "LICENSE" | head -200 | xargs rm -f 2>/dev/null || true
+        find . -name "*test*" -type d | head -100 | xargs rm -rf 2>/dev/null || true
+        find . -name "*.po" -o -name "*.pot" | head -100 | xargs rm -f 2>/dev/null || true
         
-        # 删除文档文件
-        find . -name "*.md" -o -name "*.txt" -o -name "LICENSE" | head -100 | xargs rm -f 2>/dev/null || true
+        # 更新feeds（精简版）
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
         
-        # 删除测试文件
-        find . -name "*test*" -type d | head -50 | xargs rm -rf 2>/dev/null || true
+        # 应用配置
+        make defconfig
         
         echo "=== 精简后磁盘空间 ==="
         df -h
 
-    - name: 编译前紧急磁盘检查
+    - name: 智能编译管理（带暂停清理功能）
       run: |
-        echo "=== 最终磁盘空间检查 ==="
-        df -h
-        
-        AVAILABLE_SPACE=$(df / --output=avail | tail -1 | tr -d ' ')
-        MIN_SPACE=2097152  # 2GB
-        
-        if [ "$AVAILABLE_SPACE" -lt "$MIN_SPACE" ]; then
-          echo "🚨 磁盘空间严重不足，执行紧急恢复..."
-          
-          # 停止可能占用空间的服务
-          sudo systemctl stop docker 2>/dev/null || true
-          sudo systemctl stop containerd 2>/dev/null || true
-          
-          # 深度清理
-          sudo docker system prune -af 2>/dev/null || true
-          sudo rm -rf /var/lib/docker/* 2>/dev/null || true
-          
-          # 清理编译缓存
-          if [ -d "$BUILD_DIR/staging_dir" ]; then
-            echo "清理 staging_dir 缓存..."
-            find "$BUILD_DIR/staging_dir" -name "*.a" -delete 2>/dev/null || true
-          fi
-          
-          echo "紧急恢复后磁盘空间: $(df -h / | tail -1)"
-        else
-          echo "✅ 磁盘空间充足，继续编译"
-        fi
-
-    - name: 下载软件包
-      run: |
-        if [ ! -d "$BUILD_DIR" ]; then
-          echo "❌ 错误：$BUILD_DIR 目录不存在"
-          exit 1
-        fi
-        
         cd "$BUILD_DIR"
         THREADS=${{ github.event.inputs.compile_threads }}
         
-        echo "开始下载软件包（使用 $THREADS 线程）..."
-        for i in {1..5}; do
-          echo "第 $i 次尝试下载..."
-          if make download -j$THREADS; then
-            echo "✅ 软件包下载完成"
-            break
-          else
-            echo "⚠️ 第 $i 次下载失败，重试..."
-            sleep 10
-          fi
-        done
-        
-        if [ $? -ne 0 ]; then
-          echo "❌ 软件包下载失败，但继续尝试编译..."
-        fi
-
-    - name: 分步编译（容错模式）
-      run: |
-        if [ ! -d "$BUILD_DIR" ]; then
-          echo "❌ 错误：$BUILD_DIR 目录不存在"
-          exit 1
-        fi
-        
-        cd "$BUILD_DIR"
-        THREADS=${{ github.event.inputs.compile_threads }}
-        
-        # 磁盘监控函数
-        monitor_disk() {
+        # 磁盘监控和智能清理函数
+        start_disk_monitor() {
           while true; do
-            echo "📊 磁盘使用监控: $(df -h / | tail -1)"
-            sleep 30
+            AVAILABLE_SPACE=$(df / --output=avail | tail -1 | tr -d ' ')
+            USAGE_PERCENT=$(df / --output=pcent | tail -1 | tr -d ' %')
+            
+            echo "📊 磁盘监控: 可用 ${AVAILABLE_SPACE}KB, 使用率 ${USAGE_PERCENT}%"
+            
+            # 如果使用率超过85%，触发轻度清理
+            if [ "$USAGE_PERCENT" -gt 85 ]; then
+              echo "🚨 磁盘使用率 ${USAGE_PERCENT}% > 85%，执行轻度清理..."
+              sudo apt-get clean
+              sudo rm -rf /tmp/* /var/tmp/*
+              find "$BUILD_DIR/build_dir" -name "*.o" -delete 2>/dev/null || true
+              echo "轻度清理完成"
+            fi
+            
+            # 如果使用率超过92%，触发中度清理并警告
+            if [ "$USAGE_PERCENT" -gt 92 ]; then
+              echo "🚨🚨 磁盘使用率 ${USAGE_PERCENT}% > 92%，执行中度清理..."
+              find "$BUILD_DIR/staging_dir" -name "*.a" -delete 2>/dev/null || true
+              find "$BUILD_DIR/staging_dir" -name "*.la" -delete 2>/dev/null || true
+              rm -rf "$BUILD_DIR/logs" 2>/dev/null || true
+              echo "中度清理完成"
+            fi
+            
+            # 如果使用率超过95%，触发紧急暂停清理
+            if [ "$USAGE_PERCENT" -gt 95 ]; then
+              echo "🚨🚨🚨 紧急：磁盘使用率 ${USAGE_PERCENT}% > 95%，暂停编译进行深度清理！"
+              
+              # 杀死编译进程
+              pkill -f "make.*-j$THREADS" 2>/dev/null || true
+              sleep 2
+              
+              # 执行深度清理
+              echo "执行深度磁盘清理..."
+              sudo docker system prune -af 2>/dev/null || true
+              
+              # 清理编译中间文件
+              find "$BUILD_DIR" -name "*.o" -delete 2>/dev/null || true
+              find "$BUILD_DIR" -name "*.a" -delete 2>/dev/null || true
+              find "$BUILD_DIR" -name "*.lo" -delete 2>/dev/null || true
+              find "$BUILD_DIR" -name ".configured" -delete 2>/dev/null || true
+              find "$BUILD_DIR" -name ".compiled" -delete 2>/dev/null || true
+              
+              # 清理下载缓存（危险但必要）
+              if [ -d "$BUILD_DIR/dl" ]; then
+                echo "清理下载缓存..."
+                find "$BUILD_DIR/dl" -name "*.tar.*" -type f | head -20 | xargs rm -f 2>/dev/null || true
+              fi
+              
+              echo "深度清理完成，当前磁盘使用率: $(df / --output=pcent | tail -1)"
+              echo "🔄 清理完成，编译将继续..."
+            fi
+            
+            sleep 20
           done
         }
         
-        # 后台运行磁盘监控
-        monitor_disk &
+        # 启动磁盘监控
+        start_disk_monitor &
         MONITOR_PID=$!
         
         # 确保监控进程在脚本退出时被清理
-        trap "kill $MONITOR_PID 2>/dev/null || true" EXIT
+        trap "kill $MONITOR_PID 2>/dev/null || true; exit" EXIT INT TERM
         
-        echo "开始分步编译..."
-        echo "=== 当前磁盘空间 ==="
+        echo "开始智能编译..."
+        echo "=== 编译前磁盘空间 ==="
         df -h
-        echo "=== 内存使用情况 ==="
-        free -h
         
-        echo "🔧 使用容错模式编译..."
+        # 下载软件包
+        echo "下载软件包..."
+        make download -j$THREADS || echo "下载失败，但继续尝试编译..."
         
-        # 分步编译，每一步都检查结果
+        # 分步编译函数（带重试和磁盘检查）
+        compile_step() {
+          local step=$1
+          local max_attempts=2
+          
+          for attempt in $(seq 1 $max_attempts); do
+            echo "执行: $step (尝试 $attempt/$max_attempts)"
+            
+            # 执行编译前检查磁盘
+            check_disk_before_compile
+            
+            if make $step -j$THREADS; then
+              echo "✅ $step 完成"
+              # 步骤完成后立即清理
+              cleanup_after_step "$step"
+              return 0
+            else
+              echo "❌ $step 第 $attempt 次尝试失败"
+              if [ $attempt -eq $max_attempts ]; then
+                echo "尝试单线程详细模式..."
+                make $step -j1 V=s
+                cleanup_after_step "$step"
+                return $?
+              fi
+              sleep 10
+            fi
+          done
+          return 1
+        }
+        
+        # 编译前磁盘检查
+        check_disk_before_compile() {
+          local available=$(df / --output=avail | tail -1 | tr -d ' ')
+          if [ "$available" -lt 2097152 ]; then  # 小于2GB
+            echo "⚠️ 编译前磁盘检查: 空间不足，执行预清理..."
+            sudo apt-get clean
+            find "$BUILD_DIR/build_dir" -name "*.o" -delete 2>/dev/null || true
+          fi
+        }
+        
+        # 步骤完成后清理
+        cleanup_after_step() {
+          local step=$1
+          echo "清理 $step 的中间文件..."
+          find "$BUILD_DIR/build_dir" -name "*.o" -delete 2>/dev/null || true
+          find "$BUILD_DIR/build_dir" -name "*.a" -delete 2>/dev/null || true
+          find "$BUILD_DIR/staging_dir" -name "*.a" -delete 2>/dev/null || true
+        }
+        
+        # 执行分步编译
         COMPILE_STEPS=(
           "tools/compile"
           "toolchain/compile" 
@@ -441,48 +313,22 @@ jobs:
         )
         
         for step in "${COMPILE_STEPS[@]}"; do
-          echo "=========================================="
-          echo "执行编译步骤: $step"
-          echo "当前磁盘空间: $(df -h / | tail -1)"
-          echo "=========================================="
+          echo "========================================"
+          echo "编译步骤: $step"
+          echo "当前磁盘: $(df -h / | tail -1)"
+          echo "========================================"
           
-          # 在每一步之前检查磁盘空间
-          AVAILABLE_SPACE=$(df / --output=avail | tail -1 | tr -d ' ')
-          if [ "$AVAILABLE_SPACE" -lt 1048576 ]; then  # 小于1GB
-            echo "⚠️ 磁盘空间不足，执行紧急清理..."
-            sudo apt-get clean
-            sudo rm -rf /tmp/* /var/tmp/*
-            kill $MONITOR_PID 2>/dev/null || true
-            monitor_disk &
-            MONITOR_PID=$!
+          if ! compile_step "$step"; then
+            echo "⚠️ $step 步骤编译有问题，但继续下一个步骤..."
           fi
           
-          for attempt in {1..2}; do
-            echo "第 $attempt 次尝试..."
-            if make $step -j$THREADS; then
-              echo "✅ $step 完成"
-              # 步骤完成后立即清理中间文件
-              if [ "$step" != "package/index" ]; then
-                echo "清理中间文件..."
-                find "$BUILD_DIR/build_dir" -name "*.o" -delete 2>/dev/null || true
-              fi
-              break
-            else
-              echo "⚠️ $step 第 $attempt 次尝试失败"
-              if [ $attempt -eq 2 ]; then
-                echo "❌ $step 彻底失败，尝试单线程详细模式..."
-                make $step -j1 V=s
-                if [ $? -ne 0 ]; then
-                  echo "❌ $step 单线程也失败，继续下一个步骤..."
-                fi
-              fi
-              sleep 5
-            fi
-          done
+          # 步骤间暂停，让监控有机会运行
+          sleep 5
         done
         
         # 停止监控
         kill $MONITOR_PID 2>/dev/null || true
+        
         echo "🎉 分步编译完成"
 
     - name: 最终编译
@@ -490,11 +336,23 @@ jobs:
         cd "$BUILD_DIR"
         THREADS=${{ github.event.inputs.compile_threads }}
         
-        echo "执行最终完整编译..."
+        echo "执行最终编译..."
+        echo "=== 最终编译前磁盘空间 ==="
+        df -h
+        
+        # 最终编译前紧急检查
+        AVAILABLE_SPACE=$(df / --output=avail | tail -1 | tr -d ' ')
+        if [ "$AVAILABLE_SPACE" -lt 1572864 ]; then  # 小于1.5GB
+          echo "🚨 最终编译前空间不足，执行紧急清理..."
+          sudo rm -rf /tmp/* /var/tmp/*
+          find "$BUILD_DIR" -name "*.o" -delete 2>/dev/null || true
+          find "$BUILD_DIR" -name "*.a" -delete 2>/dev/null || true
+        fi
+        
         if make -j$THREADS; then
           echo "🎉 编译成功！"
         else
-          echo "❌ 最终编译失败，尝试单线程详细编译..."
+          echo "❌ 最终编译失败，尝试单线程编译..."
           make -j1 V=s
         fi
 
@@ -505,31 +363,16 @@ jobs:
           exit 1
         fi
         
-        echo "🔍 查找生成的固件文件..."
-        
-        # 多种方式查找固件文件
-        find_command="find \"$BUILD_DIR/bin\" -type f \( -name \"*.bin\" -o -name \"*.img\" -o -name \"*.gz\" -o -name \"*.trx\" -o -name \"*.elf\" \) 2>/dev/null"
-        FIRMWARE_FILES=$(eval $find_command)
+        echo "🔍 检查生成的固件..."
+        FIRMWARE_FILES=$(find "$BUILD_DIR/bin" -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" \) 2>/dev/null || true)
         
         if [ -n "$FIRMWARE_FILES" ]; then
-          echo "✅ 找到以下固件文件:"
+          echo "✅ 找到固件文件:"
           echo "$FIRMWARE_FILES"
-          echo "=== 文件大小统计 ==="
+          echo "文件大小统计:"
           du -sh "$BUILD_DIR/bin/" 2>/dev/null || true
-          
-          # 检查文件是否有效（大于1MB）
-          VALID_FILES=0
-          while IFS= read -r file; do
-            if [ -f "$file" ] && [ $(stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null) -gt 1048576 ]; then
-              VALID_FILES=$((VALID_FILES + 1))
-            fi
-          done <<< "$FIRMWARE_FILES"
-          
-          echo "有效固件文件数: $VALID_FILES"
         else
-          echo "❌ 未找到任何固件文件"
-          echo "=== 目录结构 ==="
-          find "$BUILD_DIR/bin" -type d 2>/dev/null | head -20
+          echo "❌ 未找到固件文件"
           exit 1
         fi
         
@@ -544,41 +387,13 @@ jobs:
         path: ${{ env.BUILD_DIR }}/bin/
         retention-days: 30
 
-    - name: 快速上传固件
-      if: success()
-      uses: actions/upload-artifact@v4
-      with:
-        name: quick-firmware
-        path: |
-          ${{ env.BUILD_DIR }}/bin/**/*.bin
-          ${{ env.BUILD_DIR }}/bin/**/*.img
-        retention-days: 7
-
-    - name: 上传编译日志
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-logs
-        path: |
-          ${{ env.BUILD_DIR }}/logs/
-        retention-days: 7
-
     - name: 完成提示
       if: always()
       run: |
         if [ "${{ job.status }}" == "success" ]; then
           echo "🎊 编译成功完成！"
-          echo "📥 固件文件可在Artifacts区域下载："
-          echo "   - openwrt-firmware: 完整编译输出"
-          echo "   - quick-firmware: 快速下载固件"
-          echo "   - build-logs: 编译日志（用于调试）"
+          echo "📥 固件文件可在Artifacts区域下载"
         else
-          echo "❌ 编译过程出现错误"
-          echo "💡 故障排除建议:"
-          echo "   1. 检查 .config 文件配置"
-          echo "   2. 查看 build-logs 中的详细错误"
-          echo "   3. 确保选择了正确的目标架构和设备"
-          echo "   4. 检查是否包含必要的基础包"
-          echo "   5. 尝试减少编译的包数量"
-          echo "   6. 检查 feeds.conf.default 配置"
+          echo "❌ 编译失败"
+          echo "💡 建议：尝试使用更精简的.config配置或减少编译包数量"
         fi
