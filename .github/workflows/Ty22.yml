@@ -1,4 +1,4 @@
-name: 通用OpenWrt编译（强化版）3
+name: 通用OpenWrt编译（优化空间）3
 
 on:
   workflow_dispatch:
@@ -25,17 +25,38 @@ jobs:
     - name: 检查代码和配置
       uses: actions/checkout@v4
 
-    - name: 磁盘空间优化
+    - name: 深度磁盘空间优化
       run: |
         echo "=== 初始磁盘空间 ==="
         df -h
-        sudo swapoff -a
-        sudo dd if=/dev/zero of=/swapfile bs=1G count=2
+        
+        # 更彻底的清理
+        sudo apt-get autoremove -y
+        sudo apt-get autoclean -y
+        sudo rm -rf /var/lib/apt/lists/*
+        
+        # 清理系统日志和缓存
+        sudo journalctl --vacuum-time=1d 2>/dev/null || true
+        sudo rm -rf /var/log/*.gz /var/log/*.1 2>/dev/null || true
+        
+        # 清理Docker缓存（如果有）
+        sudo docker system prune -af 2>/dev/null || true
+        
+        # 清理pip和npm缓存
+        pip cache purge 2>/dev/null || true
+        npm cache clean --force 2>/dev/null || true
+        
+        # 创建更大的交换文件
+        sudo swapoff -a 2>/dev/null || true
+        sudo rm -f /swapfile 2>/dev/null || true
+        sudo dd if=/dev/zero of=/swapfile bs=1G count=4
         sudo chmod 600 /swapfile
         sudo mkswap /swapfile
         sudo swapon /swapfile
-        echo "=== 磁盘和内存状态 ==="
+        
+        echo "=== 优化后磁盘空间 ==="
         df -h
+        echo "=== 内存和交换空间 ==="
         free -h
 
     - name: 清理系统缓存
@@ -248,6 +269,32 @@ jobs:
           make defconfig
         fi
 
+    - name: 优化编译配置节省空间
+      run: |
+        cd "$BUILD_DIR"
+        echo "优化编译配置以节省磁盘空间..."
+        
+        # 确保启用空间优化选项
+        if grep -q "CONFIG_STRIP=y" .config; then
+          echo "✅ 已启用二进制文件strip"
+        else
+          echo "CONFIG_STRIP=y" >> .config
+        fi
+        
+        # 禁用调试信息
+        if ! grep -q "CONFIG_DEBUG_INFO=n" .config; then
+          echo "CONFIG_DEBUG_INFO=n" >> .config
+        fi
+        
+        # 移除性能分析信息
+        if ! grep -q "CONFIG_USE_MKLIBS=n" .config; then
+          echo "CONFIG_USE_MKLIBS=n" >> .config
+        fi
+        
+        # 重新应用配置
+        make defconfig
+        echo "✅ 编译配置优化完成"
+
     - name: 预编译检查和修复
       run: |
         cd "$BUILD_DIR"
@@ -278,22 +325,52 @@ jobs:
         
         echo "✅ 预编译检查完成"
 
-    - name: 编译前清理
+    - name: 精简源码和缓存
       run: |
-        echo "=== 编译前磁盘空间 ==="
-        df -h
-        echo "执行最终清理..."
-        sudo apt-get clean
-        sudo rm -rf /var/cache/apt/archives/*
+        cd "$BUILD_DIR"
+        echo "精简源码文件..."
         
-        # 移除.git目录节省空间
-        if [ -d "$BUILD_DIR/.git" ]; then
-          echo "移除.git目录节省空间..."
-          rm -rf "$BUILD_DIR/.git"
+        # 删除git历史（如果存在）
+        find . -name ".git" -type d -exec rm -rf {} + 2>/dev/null || true
+        
+        # 删除文档文件
+        find . -name "*.md" -o -name "*.txt" -o -name "LICENSE" | head -100 | xargs rm -f 2>/dev/null || true
+        
+        # 删除测试文件
+        find . -name "*test*" -type d | head -50 | xargs rm -rf 2>/dev/null || true
+        
+        echo "=== 精简后磁盘空间 ==="
+        df -h
+
+    - name: 编译前紧急磁盘检查
+      run: |
+        echo "=== 最终磁盘空间检查 ==="
+        df -h
+        
+        AVAILABLE_SPACE=$(df / --output=avail | tail -1 | tr -d ' ')
+        MIN_SPACE=2097152  # 2GB
+        
+        if [ "$AVAILABLE_SPACE" -lt "$MIN_SPACE" ]; then
+          echo "🚨 磁盘空间严重不足，执行紧急恢复..."
+          
+          # 停止可能占用空间的服务
+          sudo systemctl stop docker 2>/dev/null || true
+          sudo systemctl stop containerd 2>/dev/null || true
+          
+          # 深度清理
+          sudo docker system prune -af 2>/dev/null || true
+          sudo rm -rf /var/lib/docker/* 2>/dev/null || true
+          
+          # 清理编译缓存
+          if [ -d "$BUILD_DIR/staging_dir" ]; then
+            echo "清理 staging_dir 缓存..."
+            find "$BUILD_DIR/staging_dir" -name "*.a" -delete 2>/dev/null || true
+          fi
+          
+          echo "紧急恢复后磁盘空间: $(df -h / | tail -1)"
+        else
+          echo "✅ 磁盘空间充足，继续编译"
         fi
-        
-        echo "=== 清理后磁盘空间 ==="
-        df -h
 
     - name: 下载软件包
       run: |
@@ -331,6 +408,21 @@ jobs:
         cd "$BUILD_DIR"
         THREADS=${{ github.event.inputs.compile_threads }}
         
+        # 磁盘监控函数
+        monitor_disk() {
+          while true; do
+            echo "📊 磁盘使用监控: $(df -h / | tail -1)"
+            sleep 30
+          done
+        }
+        
+        # 后台运行磁盘监控
+        monitor_disk &
+        MONITOR_PID=$!
+        
+        # 确保监控进程在脚本退出时被清理
+        trap "kill $MONITOR_PID 2>/dev/null || true" EXIT
+        
         echo "开始分步编译..."
         echo "=== 当前磁盘空间 ==="
         df -h
@@ -351,12 +443,29 @@ jobs:
         for step in "${COMPILE_STEPS[@]}"; do
           echo "=========================================="
           echo "执行编译步骤: $step"
+          echo "当前磁盘空间: $(df -h / | tail -1)"
           echo "=========================================="
+          
+          # 在每一步之前检查磁盘空间
+          AVAILABLE_SPACE=$(df / --output=avail | tail -1 | tr -d ' ')
+          if [ "$AVAILABLE_SPACE" -lt 1048576 ]; then  # 小于1GB
+            echo "⚠️ 磁盘空间不足，执行紧急清理..."
+            sudo apt-get clean
+            sudo rm -rf /tmp/* /var/tmp/*
+            kill $MONITOR_PID 2>/dev/null || true
+            monitor_disk &
+            MONITOR_PID=$!
+          fi
           
           for attempt in {1..2}; do
             echo "第 $attempt 次尝试..."
             if make $step -j$THREADS; then
               echo "✅ $step 完成"
+              # 步骤完成后立即清理中间文件
+              if [ "$step" != "package/index" ]; then
+                echo "清理中间文件..."
+                find "$BUILD_DIR/build_dir" -name "*.o" -delete 2>/dev/null || true
+              fi
               break
             else
               echo "⚠️ $step 第 $attempt 次尝试失败"
@@ -372,6 +481,8 @@ jobs:
           done
         done
         
+        # 停止监控
+        kill $MONITOR_PID 2>/dev/null || true
         echo "🎉 分步编译完成"
 
     - name: 最终编译
