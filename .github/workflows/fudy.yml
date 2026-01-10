@@ -1,0 +1,597 @@
+name: OpenWrt极简编译（云端智能空间管理）
+
+on:
+  workflow_dispatch:
+    inputs:
+      compile_threads:
+        description: '编译线程数'
+        required: false
+        default: '1'
+        type: choice
+        options:
+          - '1'
+          - '2'
+      skip_downloads:
+        description: '跳过软件包下载（使用缓存）'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+env:
+  REPO_URL: https://github.com/coolsnowwolf/lede
+  BUILD_DIR: openwrt-build
+  CACHE_DIR: /tmp/openwrt-cache
+  COMPRESSED_DL: /tmp/compressed-dl
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 480  # 时间延长，因为可能有重试和重新下载
+
+    steps:
+    - name: 初始化环境（极致空间优化）
+      run: |
+        echo "=== 初始系统状态 ==="
+        df -h
+        free -h
+        
+        # 创建大容量交换分区（4GB）
+        echo "创建4GB交换分区..."
+        sudo swapoff -a 2>/dev/null || true
+        sudo rm -f /swapfile* 2>/dev/null || true
+        sudo fallocate -l 4G /swapfile
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile
+        sudo swapon /swapfile
+        echo "vm.swappiness=100" | sudo tee -a /etc/sysctl.conf
+        sudo sysctl -p
+        
+        # 极致清理系统空间
+        echo "执行极致空间清理..."
+        
+        # 安全清理旧内核（保留当前运行的）
+        sudo apt-get remove --purge -y $(dpkg -l 'linux-*' | awk '/^ii/{print $2}' | grep -E '[0-9]+\.[0-9]+\.[0-9]+' | grep -v $(uname -r | cut -d- -f-2) | grep -v $(uname -r | sed 's/-generic//')) 2>/dev/null || true
+        
+        # 清理所有缓存
+        sudo apt-get autoremove --purge -y
+        sudo apt-get autoclean -y
+        sudo apt-get clean -y
+        
+        # 强制清理系统缓存
+        sudo rm -rf /var/cache/apt/archives/*
+        sudo rm -rf /var/cache/apt/archives/partial/*
+        sudo rm -rf /var/lib/apt/lists/*
+        
+        # 清理日志（保留最近30分钟）
+        sudo journalctl --vacuum-time=30m 2>/dev/null || true
+        sudo find /var/log -type f -name "*.log" -mtime +0 -delete 2>/dev/null || true
+        sudo find /var/log -type f -name "*.gz" -delete 2>/dev/null || true
+        
+        # 清理临时目录
+        sudo rm -rf /tmp/* /var/tmp/*
+        
+        # 清理所有运行时缓存
+        sudo rm -rf ~/.cache/*
+        sudo rm -rf ~/.npm/_cacache/* 2>/dev/null || true
+        sudo rm -rf ~/.pip/cache/* 2>/dev/null || true
+        
+        # 创建缓存目录结构
+        mkdir -p "$CACHE_DIR"
+        mkdir -p "$COMPRESSED_DL"
+        
+        echo "=== 优化后系统状态 ==="
+        df -h
+        free -h
+
+    - name: 检查配置文件
+      run: |
+        if [ ! -f ".config" ]; then
+          echo "❌ 错误：缺少配置文件 .config"
+          echo "请在工作流运行前上传 .config 文件到仓库根目录"
+          exit 1
+        fi
+        
+        echo "✅ 找到配置文件"
+        echo "=== 配置文件大小 ==="
+        ls -lh .config
+        
+        # 分析配置文件
+        echo "=== 配置分析 ==="
+        TOTAL_PACKAGES=$(grep -c "^CONFIG_PACKAGE_" .config || true)
+        LUCI_PACKAGES=$(grep -c "^CONFIG_PACKAGE_luci" .config || true)
+        echo "总软件包数: $TOTAL_PACKAGES"
+        echo "Luci界面包数: $LUCI_PACKAGES"
+        
+        if [ "$TOTAL_PACKAGES" -gt 200 ]; then
+          echo "⚠️ 警告：配置包含 $TOTAL_PACKAGES 个软件包，可能导致磁盘空间不足"
+          echo "建议精简配置到150个以下"
+        fi
+
+    - name: 安装最小编译环境
+      run: |
+        echo "安装最小必需编译工具..."
+        sudo apt-get update
+        
+        # 绝对最小工具集
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          build-essential \
+          git \
+          libncurses5-dev \
+          libssl-dev \
+          python3 \
+          unzip \
+          wget \
+          curl \
+          gcc \
+          g++ \
+          binutils \
+          patch \
+          bzip2 \
+          flex \
+          make \
+          rsync \
+          cmake \
+          gawk \
+          sed \
+          gettext \
+          pkg-config \
+          libtool \
+          zlib1g-dev \
+          subversion \
+          automake \
+          autoconf \
+          texinfo
+        
+        echo "编译环境安装完成"
+
+    - name: 克隆并精简源码
+      run: |
+        # 删除旧目录（如果存在）
+        rm -rf "$BUILD_DIR"
+        
+        echo "开始克隆源码（深度1，单分支）..."
+        git clone --depth=1 --single-branch --branch main "$REPO_URL" "$BUILD_DIR"
+        
+        if [ $? -ne 0 ]; then
+          echo "❌ 源码克隆失败"
+          exit 1
+        fi
+        
+        cd "$BUILD_DIR"
+        
+        echo "✅ 源码克隆完成"
+        echo "原始大小: $(du -sh . | cut -f1)"
+        
+        # 应用配置文件
+        cp "../.config" .config 2>/dev/null || true
+        
+        # 极简清理源码
+        echo "执行极简源码清理..."
+        
+        # 删除所有文档和示例
+        find . -name "*.md" -o -name "*.txt" -o -name "*.rst" -o -name "*.doc*" -o -name "README*" -o -name "CHANGELOG*" | xargs rm -f 2>/dev/null || true
+        
+        # 删除测试文件
+        find . -type d -name "*test*" | head -50 | xargs rm -rf 2>/dev/null || true
+        find . -type d -name "*example*" | head -30 | xargs rm -rf 2>/dev/null || true
+        
+        # 删除不必要的语言文件
+        find . -name "*.po" -o -name "*.pot" -o -name "*.mo" | xargs rm -f 2>/dev/null || true
+        
+        # 删除.git目录（节省空间）
+        rm -rf .git
+        
+        echo "清理后大小: $(du -sh . | cut -f1)"
+
+    - name: 智能下载管理器（按需下载和压缩）
+      run: |
+        cd "$BUILD_DIR"
+        
+        # 创建下载目录符号链接到缓存
+        rm -rf dl
+        mkdir -p "$CACHE_DIR/dl"
+        ln -s "$CACHE_DIR/dl" dl
+        
+        if [ "${{ github.event.inputs.skip_downloads }}" = "true" ] && [ -d "$CACHE_DIR/dl" ] && [ "$(ls -A $CACHE_DIR/dl 2>/dev/null)" ]; then
+          echo "📦 使用缓存的下载文件"
+          echo "缓存大小: $(du -sh $CACHE_DIR/dl 2>/dev/null || echo '0')"
+        else
+          echo "🌐 开始下载软件包..."
+          
+          # 监控磁盘空间函数
+          monitor_disk_space() {
+            while true; do
+              USAGE=$(df / --output=pcent | tail -1 | tr -d ' %')
+              if [ "$USAGE" -gt 90 ]; then
+                echo "⚠️ 磁盘使用率 $USAGE%，清理旧下载..."
+                
+                # 按修改时间排序，删除最旧的10个文件
+                find "$CACHE_DIR/dl" -type f -name "*.tar.*" -o -name "*.zip" -o -name "*.gz" -o -name "*.bz2" | \
+                  xargs ls -t 2>/dev/null | tail -10 | xargs rm -f 2>/dev/null || true
+                
+                # 压缩已有的下载文件
+                if [ -d "$CACHE_DIR/dl" ]; then
+                  echo "压缩下载文件以节省空间..."
+                  find "$CACHE_DIR/dl" -name "*.tar" -type f -exec gzip -f {} \; 2>/dev/null || true
+                fi
+              fi
+              sleep 30
+            done
+          }
+          
+          # 启动监控
+          monitor_disk_space &
+          MONITOR_PID=$!
+          
+          # 确保监控进程会被清理
+          trap "kill $MONITOR_PID 2>/dev/null || true" EXIT
+          
+          # 执行下载（使用更小的并发）
+          echo "下载基础工具链..."
+          make tools/download -j1 V=s || echo "工具链下载有警告"
+          
+          echo "下载编译工具..."
+          make toolchain/download -j1 V=s || echo "工具链下载有警告"
+          
+          # 停止监控
+          kill $MONITOR_PID 2>/dev/null || true
+          
+          # 下载后立即压缩
+          echo "下载后压缩文件..."
+          find "$CACHE_DIR/dl" -name "*.tar" -type f -exec gzip -f {} \; 2>/dev/null || true
+          find "$CACHE_DIR/dl" -name "*.zip" -type f -exec gzip -f {} \; 2>/dev/null || true
+        fi
+        
+        echo "✅ 下载管理完成"
+        echo "当前下载缓存: $(du -sh $CACHE_DIR/dl 2>/dev/null || echo '空')"
+
+    - name: 配置和准备编译环境
+      run: |
+        cd "$BUILD_DIR"
+        
+        echo "更新Feeds..."
+        ./scripts/feeds update -a
+        
+        # 智能选择安装的包（根据.config文件）
+        echo "安装选定的软件包..."
+        if [ -f .config ]; then
+          # 从.config提取需要安装的包
+          grep "^CONFIG_PACKAGE_.*=y" .config | sed 's/CONFIG_PACKAGE_//;s/=y//' > /tmp/selected_packages.txt
+          while read pkg; do
+            ./scripts/feeds install "$pkg" 2>/dev/null || true
+          done < /tmp/selected_packages.txt
+        else
+          ./scripts/feeds install -a
+        fi
+        
+        echo "应用配置..."
+        make defconfig
+        
+        echo "=== 编译前磁盘空间 ==="
+        df -h
+
+    - name: 智能分步编译（带实时空间回收）
+      run: |
+        cd "$BUILD_DIR"
+        THREADS=${{ github.event.inputs.compile_threads }}
+        
+        # 空间回收函数
+        reclaim_space() {
+          local level=$1
+          echo "执行空间回收（级别$level）..."
+          
+          case $level in
+            1)
+              # 轻度回收：清理编译中间文件
+              find . -name "*.o" -type f -delete 2>/dev/null || true
+              find . -name "*.a" -type f -delete 2>/dev/null || true
+              find . -name "*.lo" -type f -delete 2>/dev/null || true
+              ;;
+            2)
+              # 中度回收：清理暂存目录和下载缓存
+              find . -name "*.o" -type f -delete 2>/dev/null || true
+              find . -name "*.a" -type f -delete 2>/dev/null || true
+              
+              # 按时间清理下载缓存（保留最近20个）
+              if [ -d "$CACHE_DIR/dl" ]; then
+                find "$CACHE_DIR/dl" -type f -name "*.tar.*" -o -name "*.zip" -o -name "*.gz" | \
+                  xargs ls -t 2>/dev/null | tail -n +21 | xargs rm -f 2>/dev/null || true
+              fi
+              ;;
+            3)
+              # 重度回收：清理build_dir和staging_dir中的大文件
+              find build_dir -type f \( -name "*.o" -o -name "*.a" -o -name "*.lo" \) -delete 2>/dev/null || true
+              
+              # 清理暂存目录中的重复文件
+              find staging_dir -type f -name "*.a" -delete 2>/dev/null || true
+              
+              # 清理下载缓存（保留最近10个）
+              if [ -d "$CACHE_DIR/dl" ]; then
+                find "$CACHE_DIR/dl" -type f -name "*.tar.*" -o -name "*.zip" -o -name "*.gz" | \
+                  xargs ls -t 2>/dev/null | tail -n +11 | xargs rm -f 2>/dev/null || true
+              fi
+              
+              # 清理/tmp
+              sudo rm -rf /tmp/*
+              ;;
+          esac
+          
+          echo "回收后磁盘: $(df -h / | tail -1)"
+        }
+        
+        # 磁盘监控函数
+        start_disk_monitor() {
+          while true; do
+            USAGE=$(df / --output=pcent | tail -1 | tr -d ' %')
+            AVAIL=$(df / --output=avail | tail -1 | tr -d ' ')
+            
+            if [ "$USAGE" -gt 80 ]; then
+              echo "⚠️ 磁盘使用率 $USAGE%，可用空间 ${AVAIL}KB"
+              
+              if [ "$USAGE" -gt 95 ]; then
+                echo "🚨 紧急：磁盘使用率 $USAGE%，暂停编译！"
+                pkill -f "make.*-j$THREADS" 2>/dev/null || true
+                sleep 2
+                reclaim_space 3
+                echo "🔄 继续编译..."
+              elif [ "$USAGE" -gt 90 ]; then
+                echo "⚠️ 警告：磁盘使用率 $USAGE%，执行重度清理"
+                reclaim_space 2
+              elif [ "$USAGE" -gt 85 ]; then
+                echo "⚠️ 注意：磁盘使用率 $USAGE%，执行轻度清理"
+                reclaim_space 1
+              fi
+            fi
+            
+            sleep 15
+          done
+        }
+        
+        # 启动监控
+        start_disk_monitor &
+        MONITOR_PID=$!
+        
+        # 确保监控进程会被清理
+        trap "kill $MONITOR_PID 2>/dev/null || true" EXIT
+        
+        # 编译步骤函数（带自动重试和空间检查）
+        compile_with_retry() {
+          local target=$1
+          local max_retries=2
+          local retry_count=0
+          
+          while [ $retry_count -lt $max_retries ]; do
+            echo "编译 $target (尝试 $((retry_count+1))/$max_retries)"
+            
+            # 编译前检查空间
+            AVAIL=$(df / --output=avail | tail -1 | tr -d ' ')
+            if [ "$AVAIL" -lt 1048576 ]; then  # 小于1GB
+              echo "编译前空间不足，执行清理..."
+              reclaim_space 2
+            fi
+            
+            if make $target -j$THREADS V=sc 2>&1 | tee /tmp/compile.log; then
+              echo "✅ $target 编译成功"
+              
+              # 编译成功后立即清理中间文件
+              echo "清理 $target 的中间文件..."
+              find . -name "*.o" -type f -delete 2>/dev/null || true
+              
+              return 0
+            else
+              retry_count=$((retry_count+1))
+              echo "❌ $target 编译失败，重试 $retry_count/$max_retries"
+              
+              # 失败后清理更多空间
+              reclaim_space 2
+              
+              if [ $retry_count -eq $max_retries ]; then
+                echo "尝试单线程编译..."
+                if make $target -j1 V=s 2>&1 | tee /tmp/compile_single.log; then
+                  echo "✅ $target 单线程编译成功"
+                  return 0
+                fi
+              fi
+              
+              sleep 10
+            fi
+          done
+          
+          echo "❌ $target 编译最终失败"
+          return 1
+        }
+        
+        # 分步编译（核心策略）
+        echo "开始智能分步编译..."
+        
+        # 1. 编译工具链（最基础）
+        compile_with_retry "tools/compile" || echo "⚠️ 工具链编译有问题，继续..."
+        
+        # 2. 编译目标工具链
+        compile_with_retry "toolchain/compile" || echo "⚠️ 目标工具链编译有问题，继续..."
+        
+        # 3. 编译目标文件系统
+        compile_with_retry "target/compile" || echo "⚠️ 目标文件系统编译有问题，继续..."
+        
+        # 4. 编译软件包（分批次）
+        echo "分批次编译软件包..."
+        
+        # 获取所有选中的包
+        if [ -f .config ]; then
+          PACKAGE_LIST=$(grep "^CONFIG_PACKAGE_.*=y" .config | sed 's/CONFIG_PACKAGE_//;s/=y//' | sort)
+          PACKAGE_COUNT=$(echo "$PACKAGE_LIST" | wc -l)
+          
+          echo "需要编译 $PACKAGE_COUNT 个软件包"
+          
+          # 分批编译，每批10个
+          BATCH_SIZE=10
+          BATCH_NUM=0
+          
+          echo "$PACKAGE_LIST" | while IFS= read -r package; do
+            if [ -n "$package" ]; then
+              BATCH_NUM=$((BATCH_NUM % BATCH_SIZE))
+              
+              if [ $BATCH_NUM -eq 0 ]; then
+                echo "编译批次 $((BATCH_NUM/BATCH_SIZE+1))..."
+                reclaim_space 1
+              fi
+              
+              echo "编译包: $package"
+              if ! make package/$package/compile -j$THREADS 2>/dev/null; then
+                echo "⚠️ $package 编译失败，尝试单线程..."
+                make package/$package/compile -j1 V=s 2>&1 | tail -20
+              fi
+              
+              BATCH_NUM=$((BATCH_NUM+1))
+              
+              # 每5个包清理一次
+              if [ $((BATCH_NUM % 5)) -eq 0 ]; then
+                find . -name "*.o" -type f -delete 2>/dev/null || true
+              fi
+            fi
+          done
+        else
+          # 如果没有.config，编译所有包
+          compile_with_retry "package/compile" || echo "⚠️ 软件包编译有问题，继续..."
+        fi
+        
+        # 停止监控
+        kill $MONITOR_PID 2>/dev/null || true
+        wait $MONITOR_PID 2>/dev/null || true
+        
+        echo "✅ 分步编译完成"
+
+    - name: 最终编译和打包
+      run: |
+        cd "$BUILD_DIR"
+        THREADS=${{ github.event.inputs.compile_threads }}
+        
+        echo "执行最终编译和打包..."
+        echo "=== 最终编译前磁盘空间 ==="
+        df -h
+        
+        # 最终空间检查
+        AVAIL=$(df / --output=avail | tail -1 | tr -d ' ')
+        if [ "$AVAIL" -lt 524288 ]; then  # 小于512MB
+          echo "🚨 最终编译前空间严重不足，执行紧急清理..."
+          
+          # 清理所有可能的中间文件
+          find . -name "*.o" -type f -delete 2>/dev/null || true
+          find . -name "*.a" -type f -delete 2>/dev/null || true
+          find . -name "*.lo" -type f -delete 2>/dev/null || true
+          
+          # 清理下载缓存（保留最近5个）
+          if [ -d "$CACHE_DIR/dl" ]; then
+            find "$CACHE_DIR/dl" -type f -name "*.tar.*" -o -name "*.zip" -o -name "*.gz" | \
+              xargs ls -t 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
+          fi
+          
+          # 强制清理/tmp
+          sudo rm -rf /tmp/*
+        fi
+        
+        # 执行最终编译
+        echo "执行make（最终步骤）..."
+        if make -j$THREADS 2>&1 | tee /tmp/final_make.log; then
+          echo "🎉 最终编译成功！"
+        else
+          echo "❌ 最终编译失败，尝试单线程..."
+          if make -j1 V=s 2>&1 | tee /tmp/final_make_single.log; then
+            echo "🎉 单线程最终编译成功！"
+          else
+            echo "❌ 最终编译失败"
+            exit 1
+          fi
+        fi
+
+    - name: 收集和验证生成的文件
+      run: |
+        if [ ! -d "$BUILD_DIR" ]; then
+          echo "❌ 错误：$BUILD_DIR 目录不存在"
+          exit 1
+        fi
+        
+        cd "$BUILD_DIR"
+        
+        echo "🔍 查找生成的固件..."
+        
+        # 查找所有可能的固件文件
+        FIRMWARE_FILES=$(find bin -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" -o -name "*.trx" -o -name "*.elf" \) 2>/dev/null || true)
+        
+        if [ -n "$FIRMWARE_FILES" ]; then
+          echo "✅ 找到固件文件:"
+          echo "$FIRMWARE_FILES"
+          echo ""
+          
+          # 显示文件详情
+          for file in $FIRMWARE_FILES; do
+            if [ -f "$file" ]; then
+              echo "📄 $file: $(ls -lh "$file" | awk '{print $5}')"
+            fi
+          done
+          
+          # 统计总大小
+          echo ""
+          echo "📦 固件目录总大小:"
+          du -sh bin/targets/* 2>/dev/null || du -sh bin/* 2>/dev/null || true
+        else
+          echo "❌ 未找到固件文件"
+          echo "检查日志以确定编译失败原因"
+          
+          # 列出bin目录内容
+          echo "bin目录内容:"
+          ls -la bin/ 2>/dev/null || true
+          
+          exit 1
+        fi
+        
+        echo "=== 最终系统状态 ==="
+        df -h
+        free -h
+
+    - name: 上传固件文件
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: openwrt-firmware
+        path: ${{ env.BUILD_DIR }}/bin/
+        retention-days: 30
+        if-no-files-found: error
+        compression-level: 0  # 不压缩，节省时间
+
+    - name: 清理缓存（可选）
+      if: always()
+      run: |
+        echo "清理编译缓存..."
+        rm -rf "$CACHE_DIR" 2>/dev/null || true
+        rm -rf "$COMPRESSED_DL" 2>/dev/null || true
+        sudo rm -f /swapfile 2>/dev/null || true
+
+    - name: 完成总结
+      if: always()
+      run: |
+        if [ "${{ job.status }}" == "success" ]; then
+          echo ""
+          echo "🎊🎊🎊 编译成功完成！ 🎊🎊🎊"
+          echo "================================="
+          echo "📥 固件文件可在 Artifacts 区域下载"
+          echo "⏱️  总编译时间: ${{ job.duration }}"
+          echo "================================="
+        else
+          echo ""
+          echo "❌❌❌ 编译失败！ ❌❌❌"
+          echo "================================="
+          echo "可能原因："
+          echo "1. 磁盘空间不足 - 精简.config文件"
+          echo "2. 依赖缺失 - 检查编译日志"
+          echo "3. 网络问题 - 下载失败"
+          echo ""
+          echo "💡 解决方案："
+          echo "1. 减少.config中的软件包数量"
+          echo "2. 使用'跳过下载'选项（如果之前成功过）"
+          echo "3. 分多次编译不同功能"
+          echo "================================="
+        fi
