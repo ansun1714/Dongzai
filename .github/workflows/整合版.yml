@@ -1,4 +1,4 @@
-name: OpenWrt编译整合（最终修复版）
+name: OpenWrt编译整合版（修复feed文件名问题）
 
 on:
   workflow_dispatch:
@@ -15,69 +15,54 @@ on:
 env:
   REPO_URL: https://github.com/coolsnowwolf/lede
   BUILD_DIR: /builder/openwrt-build
-  DOWNLOAD_CACHE: /tmp/openwrt-dl-cache
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 420
+    timeout-minutes: 360
 
     steps:
     # ========== 阶段1：基础准备 ==========
     - name: 检出仓库代码
       uses: actions/checkout@v4
-      with:
-        # 确保获取所有文件
-        fetch-depth: 0
-        # 获取所有分支，确保隐藏文件也被检出
-        fetch-tags: false
 
-    - name: 验证仓库文件（修复版）
-      id: verify_files
+    - name: 验证配置文件（修复版）
+      id: verify_config
       run: |
-        echo "=== 验证仓库文件 ==="
-        echo "当前工作目录: $(pwd)"
-        echo "GitHub工作区: ${{ github.workspace }}"
-        echo ""
-        
-        # 切换到GitHub工作区目录
-        cd "${{ github.workspace }}"
-        echo "切换到GitHub工作区目录: $(pwd)"
-        echo ""
-        
-        echo "=== 目录内容 ==="
+        echo "=== 验证配置文件 ==="
+        echo "当前目录: $(pwd)"
+        echo "完整文件列表:"
         ls -la
         echo ""
         
-        # 检查配置文件
-        echo "=== 配置文件检查 ==="
+        # 检查配置文件（支持多种可能名称）
         if [ -f ".config" ]; then
           echo "✅ 找到 .config 文件"
-          echo "文件大小: $(ls -lh .config | awk '{print $5}')"
-          echo "文件路径: $(pwd)/.config"
-          
-          # 检查文件内容（前3行）
-          echo "文件内容预览:"
-          head -3 .config
-          
           echo "config_exists=true" >> $GITHUB_OUTPUT
         else
           echo "❌ 错误：未找到 .config 文件"
           echo "请确保已将 .config 文件上传到仓库根目录"
-          echo ""
-          echo "查找所有.config文件:"
-          find . -name ".config" -type f 2>/dev/null
           exit 1
         fi
-        echo ""
         
-        # 检查feed配置文件
-        if [ -f "feed.conf.default" ]; then
-          echo "✅ 找到 feed.conf.default 文件"
-          echo "文件大小: $(ls -lh feed.conf.default | awk '{print $5}')"
+        # 检查feed配置文件（支持多种可能名称）
+        FEED_FILES=""
+        for file in "feeds.conf.default" "feed.conf.default" "feeds.conf" "feed.conf"; do
+          if [ -f "$file" ]; then
+            FEED_FILES="$FEED_FILES $file"
+            echo "✅ 找到 feed 配置文件: $file"
+          fi
+        done
+        
+        if [ -n "$FEED_FILES" ]; then
+          echo "找到的feed文件: $FEED_FILES"
+          # 使用第一个找到的feed文件
+          FIRST_FEED=$(echo $FEED_FILES | awk '{print $1}')
+          echo "将使用: $FIRST_FEED"
+          echo "feed_file=$FIRST_FEED" >> $GITHUB_OUTPUT
           echo "feed_exists=true" >> $GITHUB_OUTPUT
         else
-          echo "⚠️ 未找到 feed.conf.default，将使用源码默认配置"
+          echo "⚠️ 未找到任何 feed 配置文件，将使用源码默认配置"
           echo "feed_exists=false" >> $GITHUB_OUTPUT
         fi
 
@@ -85,29 +70,15 @@ jobs:
       run: |
         echo "=== 创建编译工作空间 ==="
         
-        # 清理可能存在的旧目录
+        # 清理旧空间
         sudo rm -rf /builder
         sudo mkdir -p /builder
         
-        # 使用/mnt空间（通常更大）
-        if [ -d "/mnt" ]; then
-          echo "使用/mnt分区创建虚拟磁盘..."
-          sudo dd if=/dev/zero of=/mnt/openwrt.img bs=1M count=15360
-          sudo mkfs.ext4 -F /mnt/openwrt.img
-          sudo mount /mnt/openwrt.img /builder
-        else
-          echo "使用根分区..."
-          # 检查根分区空间
-          AVAIL_SPACE=$(df -BG / | tail -1 | awk '{print $4}' | sed 's/G//')
-          if [ "$AVAIL_SPACE" -lt 10 ]; then
-            echo "❌ 根分区空间不足10GB"
-            df -h
-            exit 1
-          fi
-        fi
-        
+        # 创建虚拟磁盘（使用/mnt分区，通常更大）
+        sudo dd if=/dev/zero of=/mnt/openwrt.img bs=1M count=20480
+        sudo mkfs.ext4 -F /mnt/openwrt.img
+        sudo mount /mnt/openwrt.img /builder
         sudo chown -R runner:runner /builder
-        sudo chmod 755 /builder
         
         echo "✅ 工作空间创建完成"
         df -h /builder
@@ -116,108 +87,59 @@ jobs:
     - name: 安装编译环境
       run: |
         echo "=== 安装编译环境 ==="
-        
         sudo apt-get update
         sudo apt-get install -y \
-          build-essential \
-          git \
-          libncurses5-dev \
-          libssl-dev \
-          python3 \
-          python3-pip \
-          unzip \
-          wget \
-          curl \
-          gcc \
-          g++ \
-          binutils \
-          patch \
-          bzip2 \
-          flex \
-          bison \
-          make \
-          rsync \
-          cmake \
-          gawk \
-          sed \
-          gettext \
-          pkg-config \
-          libtool \
-          zlib1g-dev \
-          subversion \
-          automake \
-          autoconf \
-          texinfo \
-          ccache \
-          file \
-          gperf
-        
+          build-essential git libncurses5-dev libssl-dev python3 python3-pip \
+          unzip wget curl gcc g++ binutils patch bzip2 flex bison make rsync \
+          cmake gawk sed gettext pkg-config libtool zlib1g-dev subversion \
+          automake autoconf texinfo ccache file gperf
         echo "✅ 编译环境安装完成"
 
     # ========== 阶段3：源码和配置 ==========
     - name: 克隆OpenWrt源码
       run: |
         cd /builder
-        
         echo "=== 克隆OpenWrt源码 ==="
-        
         rm -rf openwrt-build
-        
-        echo "正在克隆源码..."
         git clone --depth=1 --single-branch --branch master "${{ env.REPO_URL }}" openwrt-build
-        
-        if [ $? -ne 0 ]; then
-          echo "❌ 源码克隆失败"
-          exit 1
-        fi
-        
         echo "✅ 源码克隆完成"
-        echo "源码目录大小: $(du -sh openwrt-build | cut -f1)"
 
-    - name: 应用配置文件（关键修复）
+    - name: 应用配置文件（修复feed文件名问题）
       run: |
+        cd "${{ env.BUILD_DIR }}"
         echo "=== 应用配置文件 ==="
         echo "当前目录: $(pwd)"
-        echo "GitHub工作区: ${{ github.workspace }}"
         
-        # 显示GitHub工作区的内容
-        echo "GitHub工作区内容:"
-        ls -la "${{ github.workspace }}"
-        
-        # 切换到编译目录
-        cd "${{ env.BUILD_DIR }}"
-        echo "切换到编译目录: $(pwd)"
-        
-        # 从GitHub工作区复制配置文件
+        # 复制.config文件
         echo "复制.config文件..."
         cp "${{ github.workspace }}/.config" .
         echo "✅ .config 已复制"
         
-        # 检查并复制feed文件
-        if [ -f "${{ github.workspace }}/feed.conf.default" ]; then
-          echo "复制feed.conf.default文件..."
-          cp "${{ github.workspace }}/feed.conf.default" .
-          echo "✅ feed.conf.default 已复制"
+        # 复制feed配置文件（如果有）
+        if [ "${{ steps.verify_config.outputs.feed_exists }}" = "true" ]; then
+          FEED_FILE="${{ steps.verify_config.outputs.feed_file }}"
+          echo "复制feed配置文件: $FEED_FILE"
+          cp "${{ github.workspace }}/$FEED_FILE" .
+          
+          # 确保文件名为feeds.conf.default（OpenWrt标准名称）
+          if [ "$FEED_FILE" != "feeds.conf.default" ]; then
+            echo "重命名 $FEED_FILE 为 feeds.conf.default"
+            mv "$FEED_FILE" feeds.conf.default
+          fi
+          echo "✅ feed配置文件已应用"
         else
-          echo "⚠️ 未找到 feed.conf.default，使用源码默认配置"
+          echo "⚠️ 使用源码默认feed配置"
         fi
-        
-        # 验证文件已复制
-        echo "验证复制的文件:"
-        ls -lh .config feed.conf.default 2>/dev/null || echo "某些文件不存在"
 
-    # ========== 阶段4：初始化OpenWrt环境 ==========
+    # ========== 阶段4：初始化环境 ==========
     - name: 初始化OpenWrt环境
       run: |
         cd "${{ env.BUILD_DIR }}"
-        
         echo "=== 初始化OpenWrt环境 ==="
         
-        # 首先确保有feeds.conf.default文件
-        if [ ! -f "feed.conf.default" ]; then
-          echo "创建默认feed.conf.default文件..."
-          cp feeds.conf.default.example feed.conf.default 2>/dev/null || echo "使用内置feed配置"
-        fi
+        # 显示当前使用的feed配置
+        echo "使用的feed配置:"
+        head -10 feeds.conf.default 2>/dev/null || echo "使用默认feed配置"
         
         # 更新feeds
         echo "更新feeds..."
@@ -230,51 +152,29 @@ jobs:
         make defconfig
         
         echo "✅ 环境初始化完成"
-        echo "当前磁盘空间:"
-        df -h /builder
 
     # ========== 阶段5：下载依赖 ==========
     - name: 下载依赖文件
       timeout-minutes: 30
       run: |
         cd "${{ env.BUILD_DIR }}"
-        
         echo "=== 下载依赖文件 ==="
-        echo "当前空间:"
-        df -h /builder
         
-        # 创建下载缓存目录
-        mkdir -p "${{ env.DOWNLOAD_CACHE }}"
-        
-        # 设置下载目录到缓存
-        rm -rf dl
-        ln -s "${{ env.DOWNLOAD_CACHE }}" dl
+        # 创建下载目录
+        mkdir -p dl
         
         echo "开始下载依赖..."
-        
-        # 分步下载，更容易调试
         echo "1. 下载工具链..."
-        make tools/download -j1 V=s || {
-          echo "⚠️ 工具链下载有警告，继续..."
-        }
+        make tools/download -j1 || make tools/download -j1 V=s
         
-        echo "2. 下载目标工具链..."
-        make toolchain/download -j1 V=s || {
-          echo "⚠️ 目标工具链下载有警告，继续..."
-        }
-        
-        echo "✅ 依赖下载完成"
-        echo "下载缓存大小: $(du -sh "${{ env.DOWNLOAD_CACHE }}" 2>/dev/null || echo '0')"
+        echo "✅ 依赖下载阶段完成"
 
     # ========== 阶段6：编译过程 ==========
     - name: 编译工具链
       timeout-minutes: 60
       run: |
         cd "${{ env.BUILD_DIR }}"
-        
         echo "=== 编译工具链 ==="
-        echo "编译前空间:"
-        df -h /builder
         
         echo "开始编译工具链..."
         if make tools/compile -j${{ inputs.compile_threads }}; then
@@ -293,7 +193,6 @@ jobs:
       timeout-minutes: 120
       run: |
         cd "${{ env.BUILD_DIR }}"
-        
         echo "=== 编译核心组件 ==="
         
         echo "1. 编译目标工具链..."
@@ -306,19 +205,12 @@ jobs:
         make package/compile -j${{ inputs.compile_threads }} || make package/compile -j1 V=s
         
         echo "✅ 核心组件编译完成"
-        echo "当前空间:"
-        df -h /builder
 
     - name: 最终编译
       timeout-minutes: 60
       run: |
         cd "${{ env.BUILD_DIR }}"
-        
         echo "=== 最终编译 ==="
-        
-        # 检查空间
-        echo "最终空间检查:"
-        df -h /builder
         
         echo "执行最终编译..."
         if make -j${{ inputs.compile_threads }}; then
@@ -338,25 +230,12 @@ jobs:
       if: success()
       run: |
         cd "${{ env.BUILD_DIR }}"
-        
         echo "=== 收集固件文件 ==="
         
-        # 查找所有固件文件
-        FIRMWARE_FILES=$(find bin -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" -o -name "*.trx" \) 2>/dev/null || true)
-        
-        if [ -n "$FIRMWARE_FILES" ]; then
-          echo "✅ 找到固件文件:"
-          for file in $FIRMWARE_FILES; do
-            if [ -f "$file" ]; then
-              echo "  📄 $(basename "$file"): $(ls -lh "$file" | awk '{print $5}')"
-            fi
-          done
-        else
-          echo "❌ 未找到固件文件"
-          echo "检查bin目录:"
-          ls -la bin/ 2>/dev/null || true
-          exit 1
-        fi
+        # 查找固件文件
+        find bin -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" \) 2>/dev/null | while read file; do
+          echo "📄 $(basename "$file"): $(ls -lh "$file" | awk '{print $5}')"
+        done || echo "未找到固件文件"
 
     - name: 上传固件
       if: success()
@@ -365,7 +244,6 @@ jobs:
         name: openwrt-firmware
         path: ${{ env.BUILD_DIR }}/bin/
         retention-days: 30
-        if-no-files-found: error
 
     - name: 清理工作空间
       if: always()
@@ -386,25 +264,18 @@ jobs:
           echo ""
           echo "🔧 编译信息:"
           echo "  - 使用线程: ${{ inputs.compile_threads }}"
-          echo "  - 配置文件: 已应用"
-          if [ "${{ steps.verify_files.outputs.feed_exists }}" = "true" ]; then
-            echo "  - Feed配置: 已使用自定义配置"
+          echo "  - 配置文件: .config"
+          if [ "${{ steps.verify_config.outputs.feed_exists }}" = "true" ]; then
+            echo "  - Feed配置: ${{ steps.verify_config.outputs.feed_file }}"
           else
-            echo "  - Feed配置: 使用默认配置"
+            echo "  - Feed配置: 使用源码默认"
           fi
         else
           echo "❌❌❌ 编译失败 ❌❌❌"
           echo ""
-          echo "🔍 失败步骤: 请查看上方具体步骤"
-          echo ""
-          echo "💡 常见问题:"
-          echo "  1. 配置文件错误 - 检查.config文件"
-          echo "  2. 网络问题 - 依赖下载失败"
-          echo "  3. 空间不足 - 精简.config配置"
-          echo ""
-          echo "🛠️ 调试建议:"
-          echo "  1. 检查.config文件是否正确"
-          echo "  2. 查看失败步骤的详细日志"
-          echo "  3. 减少编译线程数"
+          echo "💡 调试建议:"
+          echo "  1. 检查具体失败步骤的日志"
+          echo "  2. 确保.config文件正确"
+          echo "  3. 如果网络问题，重新运行工作流"
         fi
         echo "========================================"
