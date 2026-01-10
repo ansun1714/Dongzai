@@ -24,14 +24,22 @@ env:
   REPO_URL: https://github.com/coolsnowwolf/lede
   BUILD_DIR: openwrt-build
   CACHE_DIR: /tmp/openwrt-cache
-  COMPRESSED_DL: /tmp/compressed-dl
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 480  # 时间延长，因为可能有重试和重新下载
+    timeout-minutes: 480
 
     steps:
+    - name: 检查仓库文件
+      run: |
+        echo "=== 检查仓库文件 ==="
+        ls -la
+        echo ""
+        echo "隐藏文件检查:"
+        ls -la .config 2>/dev/null && echo "✅ 找到 .config 文件" || echo "❌ 未找到 .config 文件"
+        ls -la feed.conf.default 2>/dev/null && echo "✅ 找到 feed.conf.default 文件" || echo "❌ 未找到 feed.conf.default 文件"
+
     - name: 初始化环境（极致空间优化）
       run: |
         echo "=== 初始系统状态 ==="
@@ -52,7 +60,7 @@ jobs:
         # 极致清理系统空间
         echo "执行极致空间清理..."
         
-        # 安全清理旧内核（保留当前运行的）
+        # 安全清理旧内核
         sudo apt-get remove --purge -y $(dpkg -l 'linux-*' | awk '/^ii/{print $2}' | grep -E '[0-9]+\.[0-9]+\.[0-9]+' | grep -v $(uname -r | cut -d- -f-2) | grep -v $(uname -r | sed 's/-generic//')) 2>/dev/null || true
         
         # 清理所有缓存
@@ -68,19 +76,12 @@ jobs:
         # 清理日志（保留最近30分钟）
         sudo journalctl --vacuum-time=30m 2>/dev/null || true
         sudo find /var/log -type f -name "*.log" -mtime +0 -delete 2>/dev/null || true
-        sudo find /var/log -type f -name "*.gz" -delete 2>/dev/null || true
         
         # 清理临时目录
         sudo rm -rf /tmp/* /var/tmp/*
         
-        # 清理所有运行时缓存
-        sudo rm -rf ~/.cache/*
-        sudo rm -rf ~/.npm/_cacache/* 2>/dev/null || true
-        sudo rm -rf ~/.pip/cache/* 2>/dev/null || true
-        
-        # 创建缓存目录结构
+        # 创建缓存目录
         mkdir -p "$CACHE_DIR"
-        mkdir -p "$COMPRESSED_DL"
         
         echo "=== 优化后系统状态 ==="
         df -h
@@ -88,17 +89,39 @@ jobs:
 
     - name: 检查配置文件
       run: |
+        echo "=== 配置文件检查 ==="
+        
+        # 检查 .config 文件
         if [ ! -f ".config" ]; then
-          echo "❌ 错误：缺少配置文件 .config"
-          echo "请在工作流运行前上传 .config 文件到仓库根目录"
+          echo "❌ 错误：仓库根目录缺少 .config 文件"
+          echo "请确保已将 .config 文件上传到仓库根目录"
+          echo "当前目录内容："
+          ls -la
           exit 1
         fi
         
-        echo "✅ 找到配置文件"
-        echo "=== 配置文件大小 ==="
-        ls -lh .config
+        echo "✅ 找到 .config 文件"
+        echo "文件大小: $(ls -lh .config | awk '{print $5}')"
+        echo ""
+        
+        # 检查 feed.conf.default 文件
+        if [ ! -f "feed.conf.default" ]; then
+          echo "⚠️ 警告：未找到 feed.conf.default 文件"
+          echo "将使用 OpenWrt 默认的 feeds 配置"
+        else
+          echo "✅ 找到 feed.conf.default 文件"
+          echo "文件大小: $(ls -lh feed.conf.default | awk '{print $5}')"
+          echo ""
+          echo "=== feed.conf.default 预览（前10行）==="
+          head -10 feed.conf.default
+        fi
+        
+        echo ""
+        echo "=== .config 预览（前30行）==="
+        head -30 .config
         
         # 分析配置文件
+        echo ""
         echo "=== 配置分析 ==="
         TOTAL_PACKAGES=$(grep -c "^CONFIG_PACKAGE_" .config || true)
         LUCI_PACKAGES=$(grep -c "^CONFIG_PACKAGE_luci" .config || true)
@@ -147,13 +170,13 @@ jobs:
         
         echo "编译环境安装完成"
 
-    - name: 克隆并精简源码
+    - name: 克隆源码并应用配置
       run: |
         # 删除旧目录（如果存在）
         rm -rf "$BUILD_DIR"
         
         echo "开始克隆源码（深度1，单分支）..."
-        git clone --depth=1 --single-branch --branch main "$REPO_URL" "$BUILD_DIR"
+        git clone --depth=1 --single-branch --branch master "$REPO_URL" "$BUILD_DIR"
         
         if [ $? -ne 0 ]; then
           echo "❌ 源码克隆失败"
@@ -166,27 +189,33 @@ jobs:
         echo "原始大小: $(du -sh . | cut -f1)"
         
         # 应用配置文件
-        cp "../.config" .config 2>/dev/null || true
+        echo "应用配置文件..."
+        cp "../.config" .config
+        echo "✅ .config 文件已复制"
+        
+        # 应用 feed.conf.default（如果存在）
+        if [ -f "../feed.conf.default" ]; then
+          cp "../feed.conf.default" .
+          echo "✅ feed.conf.default 文件已复制"
+        else
+          echo "⚠️ 使用默认的 feeds 配置"
+        fi
         
         # 极简清理源码
         echo "执行极简源码清理..."
         
         # 删除所有文档和示例
-        find . -name "*.md" -o -name "*.txt" -o -name "*.rst" -o -name "*.doc*" -o -name "README*" -o -name "CHANGELOG*" | xargs rm -f 2>/dev/null || true
+        find . -name "*.md" -o -name "*.txt" -o -name "*.rst" -o -name "*.doc*" -o -name "README*" -o -name "CHANGELOG*" 2>/dev/null | xargs rm -f 2>/dev/null || true
         
         # 删除测试文件
-        find . -type d -name "*test*" | head -50 | xargs rm -rf 2>/dev/null || true
-        find . -type d -name "*example*" | head -30 | xargs rm -rf 2>/dev/null || true
-        
-        # 删除不必要的语言文件
-        find . -name "*.po" -o -name "*.pot" -o -name "*.mo" | xargs rm -f 2>/dev/null || true
+        find . -type d -name "*test*" 2>/dev/null | head -20 | xargs rm -rf 2>/dev/null || true
         
         # 删除.git目录（节省空间）
         rm -rf .git
         
         echo "清理后大小: $(du -sh . | cut -f1)"
 
-    - name: 智能下载管理器（按需下载和压缩）
+    - name: 智能下载管理器
       run: |
         cd "$BUILD_DIR"
         
@@ -209,14 +238,8 @@ jobs:
                 echo "⚠️ 磁盘使用率 $USAGE%，清理旧下载..."
                 
                 # 按修改时间排序，删除最旧的10个文件
-                find "$CACHE_DIR/dl" -type f -name "*.tar.*" -o -name "*.zip" -o -name "*.gz" -o -name "*.bz2" | \
+                find "$CACHE_DIR/dl" -type f \( -name "*.tar.*" -o -name "*.zip" -o -name "*.gz" -o -name "*.bz2" \) 2>/dev/null | \
                   xargs ls -t 2>/dev/null | tail -10 | xargs rm -f 2>/dev/null || true
-                
-                # 压缩已有的下载文件
-                if [ -d "$CACHE_DIR/dl" ]; then
-                  echo "压缩下载文件以节省空间..."
-                  find "$CACHE_DIR/dl" -name "*.tar" -type f -exec gzip -f {} \; 2>/dev/null || true
-                fi
               fi
               sleep 30
             done
@@ -233,16 +256,12 @@ jobs:
           echo "下载基础工具链..."
           make tools/download -j1 V=s || echo "工具链下载有警告"
           
-          echo "下载编译工具..."
-          make toolchain/download -j1 V=s || echo "工具链下载有警告"
-          
           # 停止监控
           kill $MONITOR_PID 2>/dev/null || true
           
-          # 下载后立即压缩
-          echo "下载后压缩文件..."
+          # 下载后压缩文件节省空间
+          echo "压缩下载文件以节省空间..."
           find "$CACHE_DIR/dl" -name "*.tar" -type f -exec gzip -f {} \; 2>/dev/null || true
-          find "$CACHE_DIR/dl" -name "*.zip" -type f -exec gzip -f {} \; 2>/dev/null || true
         fi
         
         echo "✅ 下载管理完成"
@@ -255,17 +274,8 @@ jobs:
         echo "更新Feeds..."
         ./scripts/feeds update -a
         
-        # 智能选择安装的包（根据.config文件）
         echo "安装选定的软件包..."
-        if [ -f .config ]; then
-          # 从.config提取需要安装的包
-          grep "^CONFIG_PACKAGE_.*=y" .config | sed 's/CONFIG_PACKAGE_//;s/=y//' > /tmp/selected_packages.txt
-          while read pkg; do
-            ./scripts/feeds install "$pkg" 2>/dev/null || true
-          done < /tmp/selected_packages.txt
-        else
-          ./scripts/feeds install -a
-        fi
+        ./scripts/feeds install -a
         
         echo "应用配置..."
         make defconfig
@@ -287,30 +297,25 @@ jobs:
             1)
               # 轻度回收：清理编译中间文件
               find . -name "*.o" -type f -delete 2>/dev/null || true
-              find . -name "*.a" -type f -delete 2>/dev/null || true
-              find . -name "*.lo" -type f -delete 2>/dev/null || true
               ;;
             2)
-              # 中度回收：清理暂存目录和下载缓存
+              # 中度回收：清理编译中间文件和暂存目录
               find . -name "*.o" -type f -delete 2>/dev/null || true
               find . -name "*.a" -type f -delete 2>/dev/null || true
               
-              # 按时间清理下载缓存（保留最近20个）
+              # 清理下载缓存（保留最近20个）
               if [ -d "$CACHE_DIR/dl" ]; then
-                find "$CACHE_DIR/dl" -type f -name "*.tar.*" -o -name "*.zip" -o -name "*.gz" | \
+                find "$CACHE_DIR/dl" -type f \( -name "*.tar.*" -o -name "*.zip" -o -name "*.gz" \) 2>/dev/null | \
                   xargs ls -t 2>/dev/null | tail -n +21 | xargs rm -f 2>/dev/null || true
               fi
               ;;
             3)
-              # 重度回收：清理build_dir和staging_dir中的大文件
+              # 重度回收：全面清理
               find build_dir -type f \( -name "*.o" -o -name "*.a" -o -name "*.lo" \) -delete 2>/dev/null || true
-              
-              # 清理暂存目录中的重复文件
-              find staging_dir -type f -name "*.a" -delete 2>/dev/null || true
               
               # 清理下载缓存（保留最近10个）
               if [ -d "$CACHE_DIR/dl" ]; then
-                find "$CACHE_DIR/dl" -type f -name "*.tar.*" -o -name "*.zip" -o -name "*.gz" | \
+                find "$CACHE_DIR/dl" -type f \( -name "*.tar.*" -o -name "*.zip" -o -name "*.gz" \) 2>/dev/null | \
                   xargs ls -t 2>/dev/null | tail -n +11 | xargs rm -f 2>/dev/null || true
               fi
               
@@ -373,7 +378,7 @@ jobs:
               reclaim_space 2
             fi
             
-            if make $target -j$THREADS V=sc 2>&1 | tee /tmp/compile.log; then
+            if make $target -j$THREADS 2>&1 | tee /tmp/compile.log; then
               echo "✅ $target 编译成功"
               
               # 编译成功后立即清理中间文件
@@ -404,10 +409,10 @@ jobs:
           return 1
         }
         
-        # 分步编译（核心策略）
+        # 分步编译
         echo "开始智能分步编译..."
         
-        # 1. 编译工具链（最基础）
+        # 1. 编译工具链
         compile_with_retry "tools/compile" || echo "⚠️ 工具链编译有问题，继续..."
         
         # 2. 编译目标工具链
@@ -416,47 +421,9 @@ jobs:
         # 3. 编译目标文件系统
         compile_with_retry "target/compile" || echo "⚠️ 目标文件系统编译有问题，继续..."
         
-        # 4. 编译软件包（分批次）
-        echo "分批次编译软件包..."
-        
-        # 获取所有选中的包
-        if [ -f .config ]; then
-          PACKAGE_LIST=$(grep "^CONFIG_PACKAGE_.*=y" .config | sed 's/CONFIG_PACKAGE_//;s/=y//' | sort)
-          PACKAGE_COUNT=$(echo "$PACKAGE_LIST" | wc -l)
-          
-          echo "需要编译 $PACKAGE_COUNT 个软件包"
-          
-          # 分批编译，每批10个
-          BATCH_SIZE=10
-          BATCH_NUM=0
-          
-          echo "$PACKAGE_LIST" | while IFS= read -r package; do
-            if [ -n "$package" ]; then
-              BATCH_NUM=$((BATCH_NUM % BATCH_SIZE))
-              
-              if [ $BATCH_NUM -eq 0 ]; then
-                echo "编译批次 $((BATCH_NUM/BATCH_SIZE+1))..."
-                reclaim_space 1
-              fi
-              
-              echo "编译包: $package"
-              if ! make package/$package/compile -j$THREADS 2>/dev/null; then
-                echo "⚠️ $package 编译失败，尝试单线程..."
-                make package/$package/compile -j1 V=s 2>&1 | tail -20
-              fi
-              
-              BATCH_NUM=$((BATCH_NUM+1))
-              
-              # 每5个包清理一次
-              if [ $((BATCH_NUM % 5)) -eq 0 ]; then
-                find . -name "*.o" -type f -delete 2>/dev/null || true
-              fi
-            fi
-          done
-        else
-          # 如果没有.config，编译所有包
-          compile_with_retry "package/compile" || echo "⚠️ 软件包编译有问题，继续..."
-        fi
+        # 4. 编译软件包
+        echo "编译软件包..."
+        compile_with_retry "package/compile" || echo "⚠️ 软件包编译有问题，继续..."
         
         # 停止监控
         kill $MONITOR_PID 2>/dev/null || true
@@ -481,16 +448,12 @@ jobs:
           # 清理所有可能的中间文件
           find . -name "*.o" -type f -delete 2>/dev/null || true
           find . -name "*.a" -type f -delete 2>/dev/null || true
-          find . -name "*.lo" -type f -delete 2>/dev/null || true
           
           # 清理下载缓存（保留最近5个）
           if [ -d "$CACHE_DIR/dl" ]; then
-            find "$CACHE_DIR/dl" -type f -name "*.tar.*" -o -name "*.zip" -o -name "*.gz" | \
+            find "$CACHE_DIR/dl" -type f \( -name "*.tar.*" -o -name "*.zip" -o -name "*.gz" \) 2>/dev/null | \
               xargs ls -t 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
           fi
-          
-          # 强制清理/tmp
-          sudo rm -rf /tmp/*
         fi
         
         # 执行最终编译
@@ -519,7 +482,7 @@ jobs:
         echo "🔍 查找生成的固件..."
         
         # 查找所有可能的固件文件
-        FIRMWARE_FILES=$(find bin -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" -o -name "*.trx" -o -name "*.elf" \) 2>/dev/null || true)
+        FIRMWARE_FILES=$(find bin -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" -o -name "*.trx" \) 2>/dev/null || true)
         
         if [ -n "$FIRMWARE_FILES" ]; then
           echo "✅ 找到固件文件:"
@@ -560,14 +523,12 @@ jobs:
         path: ${{ env.BUILD_DIR }}/bin/
         retention-days: 30
         if-no-files-found: error
-        compression-level: 0  # 不压缩，节省时间
 
-    - name: 清理缓存（可选）
+    - name: 清理缓存
       if: always()
       run: |
         echo "清理编译缓存..."
         rm -rf "$CACHE_DIR" 2>/dev/null || true
-        rm -rf "$COMPRESSED_DL" 2>/dev/null || true
         sudo rm -f /swapfile 2>/dev/null || true
 
     - name: 完成总结
@@ -578,20 +539,20 @@ jobs:
           echo "🎊🎊🎊 编译成功完成！ 🎊🎊🎊"
           echo "================================="
           echo "📥 固件文件可在 Artifacts 区域下载"
-          echo "⏱️  总编译时间: ${{ job.duration }}"
+          echo "⏱️  总编译时间: 约 $(( ${{ job.duration }} / 60000 )) 分钟"
           echo "================================="
         else
           echo ""
           echo "❌❌❌ 编译失败！ ❌❌❌"
           echo "================================="
           echo "可能原因："
-          echo "1. 磁盘空间不足 - 精简.config文件"
+          echo "1. 磁盘空间不足 - 精简.config文件中的软件包"
           echo "2. 依赖缺失 - 检查编译日志"
           echo "3. 网络问题 - 下载失败"
           echo ""
           echo "💡 解决方案："
-          echo "1. 减少.config中的软件包数量"
+          echo "1. 减少.config中的软件包数量（特别是Luci相关包）"
           echo "2. 使用'跳过下载'选项（如果之前成功过）"
-          echo "3. 分多次编译不同功能"
+          echo "3. 确保.config和feed.conf.default文件正确"
           echo "================================="
         fi
