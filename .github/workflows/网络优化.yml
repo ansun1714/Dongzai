@@ -20,7 +20,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 480  # 延长到8小时
+    timeout-minutes: 480
 
     steps:
     # ========== 阶段1：基础准备 ==========
@@ -131,7 +131,7 @@ jobs:
           feeds.conf.default 2>/dev/null || echo "无法修改feeds配置，使用默认"
         
         # 创建智能下载脚本，解决网络问题
-        cat > smart-download.sh << 'EOF'
+        cat > smart-download.sh << 'SCRIPT_EOF'
 #!/bin/bash
 # 智能下载脚本，解决网络问题
 
@@ -187,12 +187,12 @@ esac
 
 echo "❌ 所有下载尝试都失败"
 exit 1
-EOF
+SCRIPT_EOF
 
         chmod +x smart-download.sh
         
         # 创建rpcd包的专门修复（您遇到问题的包）
-        cat > fix-rpcd-download.sh << 'EOF'
+        cat > fix-rpcd-download.sh << 'FIX_EOF'
 #!/bin/bash
 # 专门修复rpcd包的下载问题
 
@@ -228,7 +228,7 @@ fi
 echo "❌ 无法获取rpcd包"
 rm -rf "$TEMP_DIR"
 exit 1
-EOF
+FIX_EOF
 
         chmod +x fix-rpcd-download.sh
         
@@ -422,6 +422,7 @@ EOF
 
     # ========== 阶段8：结果处理 ==========
     - name: 检查生成的文件
+      id: check_files
       if: always()
       run: |
         cd "${{ env.BUILD_DIR }}"
