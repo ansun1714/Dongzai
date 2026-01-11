@@ -45,11 +45,6 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 480
     
-    # 设置更大的磁盘空间（如果需要）
-    # container:
-    #   image: ubuntu:22.04
-    #   options: --storage-opt size=50G
-    
     steps:
     # ========== 阶段1：初始化与验证 ==========
     - name: 检查工作空间
@@ -136,6 +131,8 @@ try:
 except Exception as e:
     print(f"配置分析失败: {e}")
 EOF
+        else
+          echo "⚠️ Python3未安装，跳过配置分析"
         fi
         
         echo "config_valid=true" >> $GITHUB_OUTPUT
@@ -705,6 +702,7 @@ EOF
         df -h /builder
 
     - name: 最终编译与打包
+      id: compile_result
       timeout-minutes: 90
       run: |
         cd "${{ env.BUILD_DIR }}"
