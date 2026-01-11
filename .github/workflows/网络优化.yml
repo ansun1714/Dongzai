@@ -1,4 +1,4 @@
-name: OpenWrt编译（网络问题修复版）
+name: OpenWrt编译（网络问题修复版-语法修正）
 
 on:
   workflow_dispatch:
@@ -131,43 +131,43 @@ jobs:
           feeds.conf.default 2>/dev/null || echo "无法修改feeds配置，使用默认"
         
         # 创建智能下载脚本，解决网络问题
-        cat > smart-download.sh << 'SCRIPT_EOF'
+        cat > smart-download.sh << 'EOF'
 #!/bin/bash
 # 智能下载脚本，解决网络问题
 
-URL="$1"
-OUTPUT="$2"
-FILENAME=$(basename "$URL")
+URL="\$1"
+OUTPUT="\$2"
+FILENAME=\$(basename "\$URL")
 
-echo "📥 需要下载: $FILENAME"
+echo "📥 需要下载: \$FILENAME"
 
 # 检查是否已有缓存
-if [ -f "${{ env.DL_DIR }}/$FILENAME" ]; then
+if [ -f "${{ env.DL_DIR }}/\$FILENAME" ]; then
   echo "✅ 使用缓存文件"
-  cp "${{ env.DL_DIR }}/$FILENAME" "$OUTPUT"
+  cp "${{ env.DL_DIR }}/\$FILENAME" "\$OUTPUT"
   exit 0
 fi
 
 # 根据文件类型选择不同的下载策略
-case "$FILENAME" in
+case "\$FILENAME" in
   *.tar.xz|*.tar.gz|*.tar.bz2|*.zip)
     # 尝试多个镜像源
     MIRRORS=(
-      "https://mirror.fsfe.org/openwrt/sources/$FILENAME"  # 德国镜像
-      "https://openwrt.mirror.constant.com/sources/$FILENAME"  # 美国镜像
-      "https://openwrt.mirror.datarouter.de/sources/$FILENAME"  # 德国镜像2
-      "https://sources.openwrt.org/$FILENAME"  # 官方源
-      "https://mirror2.openwrt.org/sources/$FILENAME"  # 官方镜像2
-      "$URL"  # 原地址
+      "https://mirror.fsfe.org/openwrt/sources/\$FILENAME"  # 德国镜像
+      "https://openwrt.mirror.constant.com/sources/\$FILENAME"  # 美国镜像
+      "https://openwrt.mirror.datarouter.de/sources/\$FILENAME"  # 德国镜像2
+      "https://sources.openwrt.org/\$FILENAME"  # 官方源
+      "https://mirror2.openwrt.org/sources/\$FILENAME"  # 官方镜像2
+      "\$URL"  # 原地址
     )
     
-    for MIRROR_URL in "${MIRRORS[@]}"; do
-      echo "尝试镜像: $MIRROR_URL"
+    for MIRROR_URL in "\${MIRRORS[@]}"; do
+      echo "尝试镜像: \$MIRROR_URL"
       if curl -fL --connect-timeout 20 --max-time 60 --retry 3 --retry-delay 2 \
-         -C - -o "$OUTPUT" "$MIRROR_URL"; then
+         -C - -o "\$OUTPUT" "\$MIRROR_URL"; then
         echo "✅ 下载成功"
         # 缓存文件
-        cp "$OUTPUT" "${{ env.DL_DIR }}/$FILENAME" 2>/dev/null || true
+        cp "\$OUTPUT" "${{ env.DL_DIR }}/\$FILENAME" 2>/dev/null || true
         exit 0
       fi
       echo "❌ 镜像失败"
@@ -177,9 +177,9 @@ case "$FILENAME" in
   *)
     # 对于其他文件，直接下载
     if curl -fL --connect-timeout 30 --retry 5 --retry-delay 3 \
-       -C - -o "$OUTPUT" "$URL"; then
+       -C - -o "\$OUTPUT" "\$URL"; then
       echo "✅ 直接下载成功"
-      cp "$OUTPUT" "${{ env.DL_DIR }}/$FILENAME" 2>/dev/null || true
+      cp "\$OUTPUT" "${{ env.DL_DIR }}/\$FILENAME" 2>/dev/null || true
       exit 0
     fi
     ;;
@@ -187,12 +187,12 @@ esac
 
 echo "❌ 所有下载尝试都失败"
 exit 1
-SCRIPT_EOF
+EOF
 
         chmod +x smart-download.sh
         
         # 创建rpcd包的专门修复（您遇到问题的包）
-        cat > fix-rpcd-download.sh << 'FIX_EOF'
+        cat > fix-rpcd-download.sh << 'EOF'
 #!/bin/bash
 # 专门修复rpcd包的下载问题
 
@@ -200,16 +200,16 @@ echo "🛠️ 专门修复rpcd包下载..."
 FILENAME="rpcd-2024-12-02-cc9a471c.tar.xz"
 
 # 检查缓存
-if [ -f "${{ env.DL_DIR }}/$FILENAME" ]; then
+if [ -f "${{ env.DL_DIR }}/\$FILENAME" ]; then
   echo "✅ rpcd包已缓存"
-  cp "${{ env.DL_DIR }}/$FILENAME" "$1"
+  cp "${{ env.DL_DIR }}/\$FILENAME" "\$1"
   exit 0
 fi
 
 # 如果缓存中没有，尝试从GitHub获取
 echo "尝试从GitHub获取rpcd源码..."
-TEMP_DIR=$(mktemp -d)
-cd "$TEMP_DIR"
+TEMP_DIR=\$(mktemp -d)
+cd "\$TEMP_DIR"
 
 # 尝试克隆rpcd仓库
 if git clone --depth=1 https://github.com/openwrt/openwrt.git; then
@@ -217,18 +217,18 @@ if git clone --depth=1 https://github.com/openwrt/openwrt.git; then
   # 查找rpcd相关文件
   if [ -d "package/system/rpcd" ]; then
     echo "找到rpcd源码，创建压缩包..."
-    tar -cJf "${{ env.DL_DIR }}/$FILENAME" -C package/system/rpcd .
-    cp "${{ env.DL_DIR }}/$FILENAME" "$1"
+    tar -cJf "${{ env.DL_DIR }}/\$FILENAME" -C package/system/rpcd .
+    cp "${{ env.DL_DIR }}/\$FILENAME" "\$1"
     echo "✅ 从GitHub源码创建rpcd包成功"
-    rm -rf "$TEMP_DIR"
+    rm -rf "\$TEMP_DIR"
     exit 0
   fi
 fi
 
 echo "❌ 无法获取rpcd包"
-rm -rf "$TEMP_DIR"
+rm -rf "\$TEMP_DIR"
 exit 1
-FIX_EOF
+EOF
 
         chmod +x fix-rpcd-download.sh
         
