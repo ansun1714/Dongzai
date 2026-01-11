@@ -135,6 +135,7 @@ EOF
           echo "⚠️ Python3未安装，跳过配置分析"
         fi
         
+        # 修正这里：第112行附近
         echo "config_valid=true" >> $GITHUB_OUTPUT
         echo "feed_found=$FEED_FOUND" >> $GITHUB_OUTPUT
 
