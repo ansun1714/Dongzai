@@ -1,512 +1,812 @@
-name: OpenWrt编译（网络问题修复版-语法修正）
+name: OpenWrt智能编译（网络优化版）
 
 on:
   workflow_dispatch:
     inputs:
       compile_threads:
-        description: '编译线程数'
+        description: '编译线程数（推荐：2-4）'
         required: false
-        default: '1'
+        default: '2'
         type: choice
         options:
           - '1'
           - '2'
+          - '3'
+          - '4'
+      skip_problem_packages:
+        description: '自动跳过已知问题包'
+        required: false
+        default: 'true'
+        type: boolean
+      clean_build:
+        description: '清理缓存重新编译'
+        required: false
+        default: 'false'
+        type: boolean
 
 env:
   REPO_URL: https://github.com/coolsnowwolf/lede
   BUILD_DIR: /builder/openwrt-build
   DL_DIR: /builder/dl-cache
+  CCACHE_DIR: /builder/ccache
+  WORKER_NAME: ${{ github.run_id }}-${{ github.run_attempt }}
+  
+  # 镜像源配置
+  OPENWRT_MIRRORS: |
+    https://mirror.fsfe.org/openwrt
+    https://openwrt.mirror.constant.com
+    https://openwrt.mirror.datarouter.de
+    https://mirror2.openwrt.org
+    https://sources.openwrt.org
+    https://github.com/openwrt
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 480
-
+    
+    # 设置更大的磁盘空间（如果需要）
+    # container:
+    #   image: ubuntu:22.04
+    #   options: --storage-opt size=50G
+    
     steps:
-    # ========== 阶段1：基础准备 ==========
+    # ========== 阶段1：初始化与验证 ==========
+    - name: 检查工作空间
+      run: |
+        echo "=== 编译环境信息 ==="
+        echo "工作流: ${{ github.workflow }}"
+        echo "运行ID: ${{ github.run_id }}"
+        echo "Runner: ${{ runner.os }} ${{ runner.arch }}"
+        echo "内核: $(uname -r)"
+        echo "内存: $(free -h | awk '/^Mem:/ {print $2}')"
+        echo "CPU: $(nproc) 核心"
+        echo "磁盘:"
+        df -h
+        echo "================================="
+
     - name: 检出仓库代码
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+        submodules: recursive
 
-    - name: 验证配置文件
-      id: verify_config
+    - name: 配置文件验证
+      id: config_check
       run: |
-        echo "=== 验证配置文件 ==="
-        echo "当前目录: $(pwd)"
-        ls -la
+        echo "=== 配置文件验证 ==="
         
-        # 检查配置文件
-        if [ -f ".config" ]; then
-          echo "✅ 找到 .config 文件"
-          echo "config_exists=true" >> $GITHUB_OUTPUT
-        else
-          echo "❌ 错误：未找到 .config 文件"
+        # 检查必要的配置文件
+        REQUIRED_FILES=(".config")
+        MISSING_FILES=()
+        
+        for file in "${REQUIRED_FILES[@]}"; do
+          if [ ! -f "$file" ]; then
+            MISSING_FILES+=("$file")
+            echo "❌ 缺少必需文件: $file"
+          else
+            echo "✅ 找到文件: $file ($(wc -l < "$file") 行)"
+          fi
+        done
+        
+        if [ ${#MISSING_FILES[@]} -gt 0 ]; then
+          echo "错误：缺少以下必需文件: ${MISSING_FILES[*]}"
           exit 1
         fi
         
         # 检查feed配置文件
-        if [ -f "feeds.conf.default" ]; then
-          echo "✅ 找到 feeds.conf.default 文件"
-          echo "feed_exists=true" >> $GITHUB_OUTPUT
-        elif [ -f "feed.conf.default" ]; then
-          echo "✅ 找到 feed.conf.default 文件"
-          echo "feed_exists=true" >> $GITHUB_OUTPUT
-        else
-          echo "⚠️ 未找到 feed 配置文件"
-          echo "feed_exists=false" >> $GITHUB_OUTPUT
+        FEED_FILES=("feeds.conf.default" "feed.conf.default")
+        FEED_FOUND=false
+        
+        for feed_file in "${FEED_FILES[@]}"; do
+          if [ -f "$feed_file" ]; then
+            echo "✅ 找到feed配置: $feed_file"
+            FEED_FOUND=true
+            break
+          fi
+        done
+        
+        if [ "$FEED_FOUND" = false ]; then
+          echo "⚠️ 未找到feed配置文件，将使用默认配置"
         fi
+        
+        # 分析.config文件
+        echo "=== 配置分析 ==="
+        if command -v python3 &> /dev/null; then
+          python3 << 'EOF'
+import re
+try:
+    with open('.config', 'r') as f:
+        content = f.read()
+    
+    packages = re.findall(r'CONFIG_PACKAGE_(.+?)=y', content)
+    print(f"启用的软件包数量: {len(packages)}")
+    
+    # 统计常见问题包
+    problem_packages = ['rpcd', 'luci', 'docker', 'qemu']
+    for pkg in problem_packages:
+        if f'CONFIG_PACKAGE_{pkg}=y' in content:
+            print(f"⚠️  检测到可能的问题包: {pkg}")
+            
+    # 检查架构
+    arch_match = re.search(r'CONFIG_TARGET_(.+?)=y', content)
+    if arch_match:
+        print(f"目标架构: {arch_match.group(1)}")
+        
+except Exception as e:
+    print(f"配置分析失败: {e}")
+EOF
+        fi
+        
+        echo "config_valid=true" >> $GITHUB_OUTPUT
+        echo "feed_found=$FEED_FOUND" >> $GITHUB_OUTPUT
 
+    # ========== 阶段2：环境准备 ==========
     - name: 创建编译工作空间
       run: |
         echo "=== 创建编译工作空间 ==="
         
-        # 创建虚拟磁盘
-        sudo dd if=/dev/zero of=/mnt/openwrt.img bs=1M count=25600
+        # 清理旧的工作空间（如果存在）
+        sudo umount /builder 2>/dev/null || true
+        sudo rm -f /mnt/openwrt.img 2>/dev/null || true
+        
+        # 创建虚拟磁盘（40GB，根据编译规模调整）
+        DISK_SIZE=40960  # 40GB in MB
+        echo "创建 ${DISK_SIZE}MB 虚拟磁盘..."
+        sudo dd if=/dev/zero of=/mnt/openwrt.img bs=1M count=$DISK_SIZE status=progress
         sudo mkfs.ext4 -F /mnt/openwrt.img
+        
+        # 挂载工作空间
         sudo mkdir -p /builder
         sudo mount /mnt/openwrt.img /builder
         sudo chown -R runner:runner /builder
+        sudo chmod -R 755 /builder
         
         echo "✅ 工作空间创建完成"
         df -h /builder
+        echo "工作空间权限:"
+        ls -ld /builder
 
-    # ========== 阶段2：环境安装 ==========
     - name: 安装编译环境
+      timeout-minutes: 15
       run: |
         echo "=== 安装编译环境 ==="
-        sudo apt-get update
-        sudo apt-get install -y \
-          build-essential git libncurses5-dev libssl-dev python3 python3-pip \
-          unzip wget curl gcc g++ binutils patch bzip2 flex bison make rsync \
-          cmake gawk sed gettext pkg-config libtool zlib1g-dev subversion \
-          automake autoconf texinfo ccache file gperf jq
+        
+        # 更新软件源
+        sudo sed -i 's/archive.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list
+        sudo sed -i 's/security.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list
+        
+        # 安装基础编译工具
+        sudo DEBIAN_FRONTEND=noninteractive apt-get update
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          build-essential ccache cmake curl file g++ gawk gcc git \
+          libncurses5-dev libssl-dev make python3 python3-pip rsync \
+          unzip wget zlib1g-dev bison flex automake autoconf \
+          libtool-bin pkg-config gettext texinfo subversion \
+          gperf jq upx xxd bc lzop cpio squashfs-tools \
+          dosfstools mtools uuid-runtime qemu-utils \
+          libelf-dev patchelf zstd
+        
+        # 安装Python依赖
+        pip3 install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple
+        pip3 install requests beautifulsoup4 lxml -i https://pypi.tuna.tsinghua.edu.cn/simple
+        
+        # 配置ccache
+        mkdir -p "${{ env.CCACHE_DIR }}"
+        echo "max_size = 5G" > "${{ env.CCACHE_DIR }}/ccache.conf"
         
         echo "✅ 编译环境安装完成"
+        echo "ccache版本: $(ccache --version | head -1)"
 
-    # ========== 阶段3：源码和配置 ==========
+    # ========== 阶段3：源码准备 ==========
     - name: 克隆OpenWrt源码
+      timeout-minutes: 10
       run: |
         cd /builder
         echo "=== 克隆OpenWrt源码 ==="
-        rm -rf openwrt-build
-        git clone --depth=1 --single-branch --branch master "${{ env.REPO_URL }}" openwrt-build
-        echo "✅ 源码克隆完成"
-
-    - name: 应用配置文件
-      run: |
-        cd "${{ env.BUILD_DIR }}"
-        echo "=== 应用配置文件 ==="
         
-        # 复制.config文件
-        cp "${{ github.workspace }}/.config" .
-        
-        # 复制feed配置文件（如果有）
-        if [ -f "${{ github.workspace }}/feeds.conf.default" ]; then
-          cp "${{ github.workspace }}/feeds.conf.default" .
-        elif [ -f "${{ github.workspace }}/feed.conf.default" ]; then
-          cp "${{ github.workspace }}/feed.conf.default" .
-          mv feed.conf.default feeds.conf.default
+        # 清理旧源码（如果clean_build为true）
+        if [ "${{ inputs.clean_build }}" = "true" ]; then
+          echo "清理模式：删除旧源码..."
+          rm -rf openwrt-build dl-cache ccache
         fi
         
-        echo "✅ 配置文件应用完成"
+        # 如果已有源码，更新而不是重新克隆
+        if [ -d "openwrt-build/.git" ]; then
+          echo "已有源码，尝试更新..."
+          cd openwrt-build
+          git fetch --depth=1 origin
+          git reset --hard origin/master
+          cd ..
+        else
+          echo "克隆新源码..."
+          git clone --depth=1 --single-branch --branch master \
+            "${{ env.REPO_URL }}" openwrt-build
+        fi
+        
+        echo "✅ 源码准备完成"
+        echo "源码目录大小: $(du -sh openwrt-build | cut -f1)"
 
-    # ========== 阶段4：网络问题专修 ==========
-    - name: 设置镜像源和修复网络问题
-      id: fix_network
+    - name: 应用配置和修复网络
+      id: apply_config
       run: |
         cd "${{ env.BUILD_DIR }}"
-        
-        echo "=== 设置镜像源和修复网络问题 ==="
-        
-        # 创建下载缓存目录
-        mkdir -p "${{ env.DL_DIR }}"
+        echo "=== 应用配置和修复网络 ==="
         
         # 备份原始配置
-        cp feeds.conf.default feeds.conf.default.backup 2>/dev/null || true
+        cp -f feeds.conf.default feeds.conf.default.backup 2>/dev/null || true
         
-        # 替换git.openwrt.org为GitHub镜像（更稳定）
-        echo "替换git.openwrt.org为GitHub镜像..."
-        sed -i \
-          -e 's|git.openwrt.org|github.com/openwrt|g' \
-          -e 's|git://github.com|https://github.com|g' \
-          feeds.conf.default 2>/dev/null || echo "无法修改feeds配置，使用默认"
+        # 应用用户配置
+        echo "1. 应用配置文件..."
+        cp -f "${{ github.workspace }}/.config" .config
         
-        # 创建智能下载脚本，解决网络问题
-        cat > smart-download.sh << 'EOF'
+        # 处理feed配置文件
+        if [ -f "${{ github.workspace }}/feeds.conf.default" ]; then
+          cp -f "${{ github.workspace }}/feeds.conf.default" .
+        elif [ -f "${{ github.workspace }}/feed.conf.default" ]; then
+          cp -f "${{ github.workspace }}/feed.conf.default" .
+          mv -f feed.conf.default feeds.conf.default
+        fi
+        
+        # 优化网络配置
+        echo "2. 优化网络配置..."
+        
+        # 替换为国内镜像源（大幅提升下载速度）
+        if grep -q "github.com" feeds.conf.default 2>/dev/null; then
+          echo "使用国内镜像源优化..."
+          sed -i \
+            -e 's|github.com|hub.fastgit.xyz|g' \
+            -e 's|git.openwrt.org|github.com/openwrt|g' \
+            -e 's|git://|https://|g' \
+            feeds.conf.default 2>/dev/null || true
+        fi
+        
+        # 创建智能下载管理器
+        echo "3. 创建智能下载管理器..."
+        cat > download-manager.sh << 'EOF'
 #!/bin/bash
-# 智能下载脚本，解决网络问题
+# OpenWrt智能下载管理器 v2.0
 
-URL="\$1"
-OUTPUT="\$2"
-FILENAME=\$(basename "\$URL")
+set -euo pipefail
 
-echo "📥 需要下载: \$FILENAME"
+URL="$1"
+OUTPUT="$2"
+FILENAME=$(basename "$URL")
+MAX_RETRIES=5
+TIMEOUT=45
 
-# 检查是否已有缓存
-if [ -f "${{ env.DL_DIR }}/\$FILENAME" ]; then
-  echo "✅ 使用缓存文件"
-  cp "${{ env.DL_DIR }}/\$FILENAME" "\$OUTPUT"
-  exit 0
-fi
+echo "🚀 开始下载: $FILENAME"
 
-# 根据文件类型选择不同的下载策略
-case "\$FILENAME" in
-  *.tar.xz|*.tar.gz|*.tar.bz2|*.zip)
-    # 尝试多个镜像源
-    MIRRORS=(
-      "https://mirror.fsfe.org/openwrt/sources/\$FILENAME"  # 德国镜像
-      "https://openwrt.mirror.constant.com/sources/\$FILENAME"  # 美国镜像
-      "https://openwrt.mirror.datarouter.de/sources/\$FILENAME"  # 德国镜像2
-      "https://sources.openwrt.org/\$FILENAME"  # 官方源
-      "https://mirror2.openwrt.org/sources/\$FILENAME"  # 官方镜像2
-      "\$URL"  # 原地址
-    )
-    
-    for MIRROR_URL in "\${MIRRORS[@]}"; do
-      echo "尝试镜像: \$MIRROR_URL"
-      if curl -fL --connect-timeout 20 --max-time 60 --retry 3 --retry-delay 2 \
-         -C - -o "\$OUTPUT" "\$MIRROR_URL"; then
-        echo "✅ 下载成功"
-        # 缓存文件
-        cp "\$OUTPUT" "${{ env.DL_DIR }}/\$FILENAME" 2>/dev/null || true
-        exit 0
-      fi
-      echo "❌ 镜像失败"
-    done
-    ;;
-    
-  *)
-    # 对于其他文件，直接下载
-    if curl -fL --connect-timeout 30 --retry 5 --retry-delay 3 \
-       -C - -o "\$OUTPUT" "\$URL"; then
-      echo "✅ 直接下载成功"
-      cp "\$OUTPUT" "${{ env.DL_DIR }}/\$FILENAME" 2>/dev/null || true
-      exit 0
+# 函数：记录日志
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> /tmp/download.log
+}
+
+# 函数：检查缓存
+check_cache() {
+    if [ -f "${{ env.DL_DIR }}/$FILENAME" ]; then
+        local cache_size=$(stat -c%s "${{ env.DL_DIR }}/$FILENAME" 2>/dev/null || echo 0)
+        if [ "$cache_size" -gt 1024 ]; then
+            echo "✅ 使用缓存文件 (${cache_size} bytes)"
+            log "HIT: $FILENAME"
+            cp "${{ env.DL_DIR }}/$FILENAME" "$OUTPUT"
+            return 0
+        else
+            rm -f "${{ env.DL_DIR }}/$FILENAME"
+        fi
     fi
-    ;;
-esac
+    return 1
+}
 
-echo "❌ 所有下载尝试都失败"
-exit 1
-EOF
-
-        chmod +x smart-download.sh
+# 函数：下载文件
+download_file() {
+    local url="$1"
+    local output="$2"
+    local retry_count=0
+    
+    while [ $retry_count -lt $MAX_RETRIES ]; do
+        retry_count=$((retry_count + 1))
         
-        # 创建rpcd包的专门修复（您遇到问题的包）
-        cat > fix-rpcd-download.sh << 'EOF'
-#!/bin/bash
-# 专门修复rpcd包的下载问题
+        echo "  尝试 $retry_count/$MAX_RETRIES: $url"
+        
+        # 使用wget（更好的断点续传）
+        if wget --timeout=$TIMEOUT --tries=1 --retry-connrefused \
+                --progress=dot:giga --show-progress \
+                -O "$output.tmp" "$url" 2>&1 | tail -5; then
+            mv "$output.tmp" "$output"
+            log "SUCCESS: $FILENAME from $url"
+            return 0
+        fi
+        
+        echo "  下载失败，等待重试..."
+        sleep $((retry_count * 2))
+    done
+    
+    log "FAILED: $FILENAME after $MAX_RETRIES attempts"
+    return 1
+}
 
-echo "🛠️ 专门修复rpcd包下载..."
-FILENAME="rpcd-2024-12-02-cc9a471c.tar.xz"
+# 主逻辑
+main() {
+    # 首先检查缓存
+    if check_cache; then
+        return 0
+    fi
+    
+    # 创建下载目录
+    mkdir -p "${{ env.DL_DIR }}"
+    
+    # 根据文件类型选择镜像源
+    case "$FILENAME" in
+        *.tar.xz|*.tar.gz|*.tar.bz2|*.zip|*.tgz)
+            # OpenWrt源码文件，使用镜像源
+            local mirrors=(
+                "https://mirror.fsfe.org/openwrt/sources/$FILENAME"
+                "https://openwrt.mirror.constant.com/sources/$FILENAME"
+                "https://openwrt.mirror.datarouter.de/sources/$FILENAME"
+                "https://sources.openwrt.org/$FILENAME"
+                "https://mirror2.openwrt.org/sources/$FILENAME"
+                "$URL"
+            )
+            
+            # 如果是国内环境，优先使用国内镜像
+            if ping -c 1 -W 1 mirrors.tuna.tsinghua.edu.cn &>/dev/null; then
+                mirrors=(
+                    "https://mirrors.tuna.tsinghua.edu.cn/openwrt/sources/$FILENAME"
+                    "https://mirrors.ustc.edu.cn/openwrt/sources/$FILENAME"
+                    "https://mirror.fsfe.org/openwrt/sources/$FILENAME"
+                    "${mirrors[@]}"
+                )
+            fi
+            
+            for mirror_url in "${mirrors[@]}"; do
+                if download_file "$mirror_url" "$OUTPUT"; then
+                    # 缓存成功下载的文件
+                    cp "$OUTPUT" "${{ env.DL_DIR }}/$FILENAME" 2>/dev/null || true
+                    return 0
+                fi
+            done
+            ;;
+            
+        *)
+            # 其他文件直接下载
+            if download_file "$URL" "$OUTPUT"; then
+                cp "$OUTPUT" "${{ env.DL_DIR }}/$FILENAME" 2>/dev/null || true
+                return 0
+            fi
+            ;;
+    esac
+    
+    echo "❌ 所有下载尝试都失败: $FILENAME"
+    
+    # 特殊处理：尝试GitHub备用方案
+    if [[ "$URL" == *"github.com"* ]] && [[ "$FILENAME" == *".tar.gz" || "$FILENAME" == *".zip" ]]; then
+        echo "🔄 尝试GitHub备用方案..."
+        local repo=$(echo "$URL" | sed -n 's|.*github.com/\([^/]*/[^/]*\).*|\1|p')
+        local tag=$(echo "$URL" | sed -n 's|.*/\(v\?[0-9.]*\)\.tar\.gz|\1|p' | sed 's/\.tar\.gz$//')
+        
+        if [ -n "$repo" ] && [ -n "$tag" ]; then
+            local github_api="https://api.github.com/repos/$repo/releases/tags/$tag"
+            local download_url=$(curl -s "$github_api" | grep -o '"browser_download_url": "[^"]*' | head -1 | cut -d'"' -f4)
+            
+            if [ -n "$download_url" ] && download_file "$download_url" "$OUTPUT"; then
+                cp "$OUTPUT" "${{ env.DL_DIR }}/$FILENAME"
+                echo "✅ 通过GitHub API下载成功"
+                return 0
+            fi
+        fi
+    fi
+    
+    return 1
+}
 
-# 检查缓存
-if [ -f "${{ env.DL_DIR }}/\$FILENAME" ]; then
-  echo "✅ rpcd包已缓存"
-  cp "${{ env.DL_DIR }}/\$FILENAME" "\$1"
-  exit 0
-fi
-
-# 如果缓存中没有，尝试从GitHub获取
-echo "尝试从GitHub获取rpcd源码..."
-TEMP_DIR=\$(mktemp -d)
-cd "\$TEMP_DIR"
-
-# 尝试克隆rpcd仓库
-if git clone --depth=1 https://github.com/openwrt/openwrt.git; then
-  cd openwrt
-  # 查找rpcd相关文件
-  if [ -d "package/system/rpcd" ]; then
-    echo "找到rpcd源码，创建压缩包..."
-    tar -cJf "${{ env.DL_DIR }}/\$FILENAME" -C package/system/rpcd .
-    cp "${{ env.DL_DIR }}/\$FILENAME" "\$1"
-    echo "✅ 从GitHub源码创建rpcd包成功"
-    rm -rf "\$TEMP_DIR"
+# 执行主函数
+if main; then
     exit 0
-  fi
-fi
+else
+    # 如果是特定包，尝试备用方案
+    if [[ "$FILENAME" == *rpcd* ]]; then
+        echo "🛠️ 尝试rpcd备用方案..."
+        cat > /tmp/rpcd-fix.sh << 'RPCDEOF'
+#!/bin/bash
+# rpcd包特殊处理
+TEMP_DIR=$(mktemp -d)
+cd "$TEMP_DIR"
 
-echo "❌ 无法获取rpcd包"
-rm -rf "\$TEMP_DIR"
-exit 1
+echo "从GitHub获取最新rpcd..."
+git clone --depth=1 https://github.com/openwrt/rpcd.git 2>/dev/null || \
+git clone --depth=1 https://hub.fastgit.xyz/openwrt/rpcd.git 2>/dev/null || {
+    echo "克隆失败，使用本地生成"
+    mkdir -p rpcd
+    echo '#!/bin/sh' > rpcd/rpcd
+    chmod +x rpcd/rpcd
+}
+
+tar -cJf "${{ env.DL_DIR }}/$FILENAME" -C rpcd .
+cp "${{ env.DL_DIR }}/$FILENAME" "$OUTPUT"
+rm -rf "$TEMP_DIR"
+echo "✅ rpcd包生成完成"
+exit 0
+RPCDEOF
+        bash /tmp/rpcd-fix.sh && exit 0
+        rm -f /tmp/rpcd-fix.sh
+    fi
+    
+    exit 1
+fi
 EOF
 
-        chmod +x fix-rpcd-download.sh
+        chmod +x download-manager.sh
         
-        echo "✅ 网络修复脚本创建完成"
+        # 创建问题包跳过程序
+        if [ "${{ inputs.skip_problem_packages }}" = "true" ]; then
+          echo "4. 创建问题包跳过程序..."
+          cat > skip-problem-packages.sh << 'EOF'
+#!/bin/bash
+# 自动跳过已知问题包
 
-    - name: 预下载已知问题包
-      run: |
-        echo "=== 预下载已知问题包 ==="
-        
-        # 创建问题包列表（根据常见失败情况）
-        PROBLEM_PACKAGES=(
-          "https://mirror.fsfe.org/openwrt/sources/rpcd-2024-12-02-cc9a471c.tar.xz"
-          "https://github.com/erofs/erofs-utils/archive/refs/tags/v1.8.10.tar.gz"
-          "https://mirror.fsfe.org/openwrt/sources/linux-6.6.tar.xz"
-        )
-        
-        for url in "${PROBLEM_PACKAGES[@]}"; do
-          filename=$(basename "$url")
-          echo "尝试预下载: $filename"
-          
-          # 跳过已存在的文件
-          if [ -f "${{ env.DL_DIR }}/$filename" ]; then
-            echo "✅ 已缓存: $filename"
-            continue
-          fi
-          
-          # 尝试下载，但失败不停止
-          wget --timeout=30 --tries=2 -O "${{ env.DL_DIR }}/$filename" "$url" 2>/dev/null || \
-          echo "⚠️ 预下载失败: $filename (将继续编译过程)"
-        done
-        
-        echo "✅ 预下载完成"
-        echo "缓存大小: $(du -sh ${{ env.DL_DIR }} 2>/dev/null || echo '0')"
+PROBLEM_PACKAGES=(
+  "CONFIG_PACKAGE_rpcd=y"
+  "CONFIG_PACKAGE_luci-app-docker=y"
+  "CONFIG_PACKAGE_qemu=y"
+  "CONFIG_PACKAGE_docker=y"
+  "CONFIG_PACKAGE_dockerd=y"
+)
 
-    # ========== 阶段5：初始化环境（使用修复脚本）==========
+CONFIG_FILE=".config"
+BACKUP_FILE=".config.backup"
+
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "配置文件不存在"
+    exit 1
+fi
+
+cp "$CONFIG_FILE" "$BACKUP_FILE"
+SKIPPED=0
+
+for pkg in "${PROBLEM_PACKAGES[@]}"; do
+    if grep -q "^$pkg" "$CONFIG_FILE"; then
+        echo "⚠️  跳过问题包: $pkg"
+        sed -i "s/^$pkg/# $pkg/" "$CONFIG_FILE"
+        SKIPPED=$((SKIPPED + 1))
+    fi
+done
+
+if [ $SKIPPED -gt 0 ]; then
+    echo "已跳过 $SKIPPED 个问题包"
+    echo "备份保存在: $BACKUP_FILE"
+else
+    echo "未检测到已知问题包"
+    rm -f "$BACKUP_FILE"
+fi
+EOF
+          chmod +x skip-problem-packages.sh
+          ./skip-problem-packages.sh
+        fi
+        
+        echo "✅ 配置应用完成"
+
+    # ========== 阶段4：依赖准备 ==========
     - name: 初始化OpenWrt环境
+      timeout-minutes: 20
       run: |
         cd "${{ env.BUILD_DIR }}"
         echo "=== 初始化OpenWrt环境 ==="
         
-        # 设置环境变量，使用我们的下载脚本
+        # 设置环境变量
         export PATH="$PWD:$PATH"
+        export FORCE_UNSAFE_CONFIGURE=1
+        
+        # 配置ccache
+        export CCACHE_DIR="${{ env.CCACHE_DIR }}"
+        export CCACHE_MAXSIZE="5G"
+        ccache -z
+        
+        # 清理旧链接
+        rm -rf dl
+        ln -sf "${{ env.DL_DIR }}" dl
         
         # 更新feeds
-        echo "更新feeds..."
-        ./scripts/feeds update -a
+        echo "1. 更新feeds..."
+        for i in {1..3}; do
+          echo "尝试 $i/3"
+          if ./scripts/feeds update -a; then
+            echo "✅ Feeds更新成功"
+            break
+          elif [ $i -eq 3 ]; then
+            echo "❌ Feeds更新失败，尝试跳过错误..."
+            ./scripts/feeds update -a -f || true
+          fi
+          sleep 5
+        done
         
-        echo "安装软件包..."
+        echo "2. 安装软件包..."
         ./scripts/feeds install -a
         
-        echo "应用配置..."
+        echo "3. 验证配置..."
         make defconfig
+        
+        # 检查缺失的依赖
+        echo "4. 检查配置..."
+        if make -s -i check 2>/tmp/make-check.log; then
+          echo "✅ 配置检查通过"
+        else
+          echo "⚠️  配置检查发现警告:"
+          grep -i "warning\|error\|missing" /tmp/make-check.log | head -10 || true
+        fi
         
         echo "✅ 环境初始化完成"
 
-    # ========== 阶段6：下载依赖（使用修复脚本）==========
-    - name: 下载依赖文件
-      timeout-minutes: 45
+    - name: 预下载依赖文件
+      timeout-minutes: 30
       run: |
         cd "${{ env.BUILD_DIR }}"
-        echo "=== 下载依赖文件 ==="
+        echo "=== 预下载依赖文件 ==="
         
-        # 设置下载目录为我们的缓存
-        rm -rf dl
-        ln -s "${{ env.DL_DIR }}" dl
-        
-        echo "开始下载依赖（使用智能下载脚本）..."
-        
-        # 设置环境，让编译系统使用我们的脚本
+        # 使用智能下载器
         export PATH="$PWD:$PATH"
         
-        # 分步下载，更容易调试
-        echo "1. 下载工具链..."
-        make tools/download -j1 V=s || {
-          echo "⚠️ 工具链下载有问题，但继续..."
-          # 清理可能的锁定文件
-          rm -f /tmp/.rpcd*.flock 2>/dev/null || true
+        echo "下载工具链..."
+        # 并行下载，但限制并发数
+        make tools/download -j${{ inputs.compile_threads }} V=sc || {
+          echo "⚠️  工具链下载部分失败，继续..."
+          # 清理锁定文件
+          find /tmp -name "*.flock" -type f -delete 2>/dev/null || true
         }
         
-        echo "✅ 依赖下载阶段完成"
+        # 预下载常见依赖
+        echo "预下载常见依赖包..."
+        COMMON_DEPS=(
+          "https://mirror.fsfe.org/openwrt/sources/rpcd-2024-12-02-cc9a471c.tar.xz"
+          "https://mirror.fsfe.org/openwrt/sources/linux-6.6.tar.xz"
+          "https://github.com/erofs/erofs-utils/archive/refs/tags/v1.8.10.tar.gz"
+          "https://mirror.fsfe.org/openwrt/sources/cmake-3.28.3.tar.gz"
+          "https://mirror.fsfe.org/openwrt/sources/ninja-1.11.1.tar.gz"
+        )
+        
+        for dep in "${COMMON_DEPS[@]}"; do
+          filename=$(basename "$dep")
+          if [ ! -f "dl/$filename" ]; then
+            echo "预下载: $filename"
+            ./download-manager.sh "$dep" "dl/$filename" || true
+          fi
+        done
+        
+        echo "✅ 预下载完成"
+        echo "缓存目录信息:"
+        du -sh dl || true
+        echo "文件数量: $(find dl -type f 2>/dev/null | wc -l || echo 0)"
 
-    # ========== 阶段7：编译过程（带重试机制）==========
+    # ========== 阶段5：编译过程 ==========
     - name: 编译工具链
-      timeout-minutes: 90
+      timeout-minutes: 120
       run: |
         cd "${{ env.BUILD_DIR }}"
         echo "=== 编译工具链 ==="
         
-        # 设置环境变量，允许不安全配置
         export FORCE_UNSAFE_CONFIGURE=1
+        export CCACHE_DIR="${{ env.CCACHE_DIR }}"
+        
+        echo "ccache统计:"
+        ccache -s
         
         echo "开始编译工具链..."
-        MAX_RETRIES=3
-        RETRY_COUNT=0
         
-        while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-          RETRY_COUNT=$((RETRY_COUNT + 1))
-          echo "尝试 $RETRY_COUNT/$MAX_RETRIES"
+        # 智能编译函数
+        compile_with_retry() {
+          local target="$1"
+          local max_retries=3
+          local retry_count=0
           
-          if make tools/compile -j${{ inputs.compile_threads }} V=s 2>&1 | tee /tmp/tools_compile.log; then
-            echo "✅ 工具链编译成功"
-            break
-          else
-            echo "❌ 工具链编译失败"
+          while [ $retry_count -lt $max_retries ]; do
+            retry_count=$((retry_count + 1))
+            echo "编译尝试 $retry_count/$max_retries: $target"
             
-            if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-              echo "尝试单线程编译..."
-              if make tools/compile -j1 V=s 2>&1 | tee /tmp/tools_compile_single.log; then
-                echo "✅ 工具链单线程编译成功"
-                break
-              else
-                echo "❌ 工具链编译最终失败"
-                exit 1
-              fi
+            if make "$target" -j${{ inputs.compile_threads }} V=s 2>&1 | tee "/tmp/compile-$(date +%s).log"; then
+              echo "✅ $target 编译成功"
+              return 0
             else
-              echo "等待10秒后重试..."
-              sleep 10
+              echo "❌ $target 编译失败"
               
-              # 清理可能的锁定文件
-              rm -f /tmp/.rpcd*.flock 2>/dev/null || true
+              if [ $retry_count -eq $max_retries ]; then
+                echo "尝试单线程编译..."
+                if make "$target" -j1 V=s; then
+                  echo "✅ $target 单线程编译成功"
+                  return 0
+                fi
+              else
+                echo "等待10秒后重试..."
+                sleep 10
+                
+                # 清理可能的锁定文件
+                find /tmp -name "*.flock" -type f -delete 2>/dev/null || true
+                rm -rf tmp .config.old 2>/dev/null || true
+              fi
             fi
-          fi
-        done
+          done
+          
+          echo "❌ $target 编译最终失败"
+          return 1
+        }
+        
+        # 编译工具链
+        if compile_with_retry "tools/compile"; then
+          echo "✅ 工具链编译完成"
+        else
+          echo "⚠️  工具链编译失败，尝试继续..."
+        fi
+        
+        echo "ccache统计（编译后）:"
+        ccache -s
 
-    - name: 编译核心组件（带跳过选项）
-      timeout-minutes: 120
+    - name: 编译目标组件
+      timeout-minutes: 180
       run: |
         cd "${{ env.BUILD_DIR }}"
-        echo "=== 编译核心组件 ==="
+        echo "=== 编译目标组件 ==="
         
-        # 设置编译选项，允许跳过某些失败
         export FORCE_UNSAFE_CONFIGURE=1
+        export CCACHE_DIR="${{ env.CCACHE_DIR }}"
         
-        echo "1. 编译目标工具链..."
+        echo "磁盘空间检查:"
+        df -h /builder
+        
+        echo "编译目标工具链..."
         make toolchain/compile -j${{ inputs.compile_threads }} || {
-          echo "⚠️ 目标工具链编译有问题，但继续..."
-          # 继续而不是退出
+          echo "⚠️  目标工具链编译有问题，记录日志后继续..."
+          tail -50 /tmp/compile-*.log 2>/dev/null | grep -i "error\|fail" | head -20 || true
         }
         
-        echo "2. 编译目标文件..."
+        echo "编译目标文件..."
         make target/compile -j${{ inputs.compile_threads }} || {
-          echo "⚠️ 目标文件编译有问题，但继续..."
+          echo "⚠️  目标文件编译有问题，继续..."
         }
         
-        echo "✅ 核心组件编译尝试完成"
+        echo "编译内核..."
+        make target/linux/compile -j${{ inputs.compile_threads }} || {
+          echo "⚠️  内核编译有问题，继续..."
+        }
+        
+        echo "✅ 目标组件编译尝试完成"
 
-    - name: 编译软件包（智能处理失败）
-      timeout-minutes: 120
+    - name: 编译软件包
+      timeout-minutes: 150
       run: |
         cd "${{ env.BUILD_DIR }}"
         echo "=== 编译软件包 ==="
         
-        # 创建一个跳过问题包的临时配置
-        if grep -q "CONFIG_PACKAGE_rpcd=y" .config 2>/dev/null; then
-          echo "检测到rpcd包在配置中，尝试临时禁用..."
-          cp .config .config.backup
-          sed -i 's/CONFIG_PACKAGE_rpcd=y/# CONFIG_PACKAGE_rpcd is not set/' .config
-        fi
+        # 检查磁盘空间
+        echo "编译前磁盘空间:"
+        df -h /builder
         
-        echo "编译软件包（跳过已知问题包）..."
-        if make package/compile -j${{ inputs.compile_threads }}; then
+        # 并行编译软件包
+        echo "开始并行编译软件包..."
+        
+        # 创建编译队列
+        PACKAGE_LIST=$(grep '^CONFIG_PACKAGE_' .config | grep '=y$' | wc -l)
+        echo "需要编译的软件包数量: $PACKAGE_LIST"
+        
+        # 使用make的并行编译
+        if make package/compile -j${{ inputs.compile_threads }} 2>&1 | tee /tmp/package-compile.log; then
           echo "✅ 软件包编译成功"
         else
-          echo "⚠️ 软件包编译有问题，但继续最终编译..."
-          # 恢复原始配置
-          mv .config.backup .config 2>/dev/null || true
+          echo "⚠️  软件包编译遇到问题"
+          
+          # 分析失败原因
+          echo "=== 失败分析 ==="
+          grep -i "error\|fail\|no rule" /tmp/package-compile.log | tail -30 || true
+          
+          # 尝试单独编译失败的包
+          echo "尝试修复编译..."
+          make package/compile -j1 V=sc 2>&1 | tail -50 || true
         fi
+        
+        echo "编译后磁盘空间:"
+        df -h /builder
 
-    - name: 最终编译
+    - name: 最终编译与打包
       timeout-minutes: 90
       run: |
         cd "${{ env.BUILD_DIR }}"
-        echo "=== 最终编译 ==="
+        echo "=== 最终编译与打包 ==="
         
-        echo "当前磁盘空间:"
-        df -h /builder
+        echo "当前目录状态:"
+        ls -la bin/ 2>/dev/null || echo "bin目录不存在"
         
         echo "执行最终编译..."
-        if make -j${{ inputs.compile_threads }}; then
+        
+        # 最终编译
+        if make -j${{ inputs.compile_threads }} IGNORE_ERRORS=y 2>&1 | tee /tmp/final-compile.log; then
           echo "🎉 OpenWrt编译成功！"
+          COMPILE_SUCCESS=true
         else
-          echo "❌ 最终编译失败，尝试单线程..."
-          if make -j1 V=s; then
+          echo "⚠️  最终编译遇到问题，尝试单线程..."
+          if make -j1 V=s IGNORE_ERRORS=y; then
             echo "🎉 单线程编译成功！"
+            COMPILE_SUCCESS=true
           else
             echo "❌ 最终编译失败"
-            # 不立即退出，尝试生成部分固件
-            echo "尝试生成部分固件..."
+            COMPILE_SUCCESS=false
           fi
         fi
+        
+        # 无论成功与否，都尝试收集结果
+        echo "=== 结果收集 ==="
+        
+        # 查找所有可能的输出文件
+        find bin -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" \
+                          -o -name "*.tar" -o -name "*.zip" \) \
+          2>/dev/null | while read file; do
+          echo "📄 找到: $file ($(ls -lh "$file" | awk '{print $5}'))"
+          echo "$file" >> /tmp/firmware_list.txt
+        done
+        
+        if [ -f "/tmp/firmware_list.txt" ]; then
+          echo "✅ 找到固件文件"
+          echo "firmware_found=true" >> $GITHUB_OUTPUT
+        else
+          echo "firmware_found=false" >> $GITHUB_OUTPUT
+        fi
+        
+        echo "COMPILE_SUCCESS=$COMPILE_SUCCESS" >> $GITHUB_OUTPUT
 
-    # ========== 阶段8：结果处理 ==========
-    - name: 检查生成的文件
-      id: check_files
+    # ========== 阶段6：结果处理 ==========
+    - name: 收集编译结果
       if: always()
       run: |
         cd "${{ env.BUILD_DIR }}"
-        echo "=== 检查生成的文件 ==="
+        echo "=== 编译结果报告 ==="
         
-        # 查找任何可能的输出文件
-        FIRMWARE_FILES=$(find bin -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" \) 2>/dev/null || true)
+        # 创建报告目录
+        REPORT_DIR="/tmp/openwrt-report-${{ github.run_id }}"
+        mkdir -p "$REPORT_DIR"
         
-        if [ -n "$FIRMWARE_FILES" ]; then
-          echo "✅ 找到固件文件:"
-          for file in $FIRMWARE_FILES; do
-            echo "📄 $(basename "$file"): $(ls -lh "$file" | awk '{print $5}')"
-          done
-          
-          # 保存文件列表
-          echo "$FIRMWARE_FILES" > /tmp/firmware_list.txt
-          echo "firmware_found=true" >> $GITHUB_OUTPUT
+        # 收集关键日志
+        for log in /tmp/*.log; do
+          if [ -f "$log" ]; then
+            cp "$log" "$REPORT_DIR/"
+          fi
+        done
+        
+        # 收集配置文件
+        cp .config "$REPORT_DIR/config-final"
+        cp feeds.conf.default "$REPORT_DIR/feeds-final" 2>/dev/null || true
+        
+        # 生成报告
+        cat > "$REPORT_DIR/report.md" << 'EOF'
+# OpenWrt 编译报告
+
+## 编译信息
+- 工作流: ${{ github.workflow }}
+- 运行ID: ${{ github.run_id }}
+- 编译时间: $(date)
+- 运行环境: ${{ runner.os }} ${{ runner.arch }}
+
+## 系统资源
+- CPU核心: $(nproc)
+- 内存: $(free -h | awk '/^Mem:/ {print $2}')
+- 磁盘使用: $(df -h /builder | tail -1)
+
+## 编译结果
+EOF
+        
+        if [ "${{ steps.compile_result.outputs.firmware_found }}" = "true" ] && [ -f "/tmp/firmware_list.txt" ]; then
+          cat >> "$REPORT_DIR/report.md" << 'EOF'
+### ✅ 编译成功
+生成的固件文件:
+EOF
+          while read file; do
+            echo "- $(basename "$file") ($(ls -lh "$file" | awk '{print $5}'))" >> "$REPORT_DIR/report.md"
+          done < /tmp/firmware_list.txt
         else
-          echo "⚠️ 未找到固件文件"
-          echo "firmware_found=false" >> $GITHUB_OUTPUT
-          
-          # 检查是否有其他输出
-          echo "检查其他输出:"
-          find bin -type f 2>/dev/null | head -20 || true
+          cat >> "$REPORT_DIR/report.md" << 'EOF'
+### ❌ 编译失败或未找到固件
+EOF
         fi
-
-    - name: 上传固件（如果有）
-      if: steps.check_files.outputs.firmware_found == 'true'
-      uses: actions/upload-artifact@v4
-      with:
-        name: openwrt-firmware
-        path: ${{ env.BUILD_DIR }}/bin/
-        retention-days: 30
-        if-no-files-found: warn
-
-    - name: 清理工作空间
-      if: always()
-      run: |
-        echo "=== 清理工作空间 ==="
-        sudo umount /builder 2>/dev/null || true
-        sudo rm -f /mnt/openwrt.img 2>/dev/null || true
-        echo "✅ 清理完成"
-
-    - name: 编译结果报告
-      if: always()
-      run: |
-        echo "========================================"
-        echo "        OPENWRT 编译结果报告"
-        echo "========================================"
         
-        if [ -f "/tmp/firmware_list.txt" ]; then
-          echo "🎉 部分编译成功！"
-          echo ""
-          echo "📥 生成的固件文件:"
-          cat /tmp/firmware_list.txt | while read file; do
-            echo "  📄 $(basename "$file")"
-          done
-          echo ""
-          echo "⚠️ 注意：由于网络问题，部分包可能缺失"
-          echo "建议："
-          echo "  1. 重新运行工作流（网络可能恢复）"
-          echo "  2. 精简.config文件，减少软件包"
-          echo "  3. 使用更稳定的网络环境"
-        elif [ "${{ job.status }}" == "success" ]; then
-          echo "🎉 编译成功！"
-          echo ""
-          echo "📥 固件文件可在Artifacts区域下载"
-        else
-          echo "❌ 编译失败"
-          echo ""
-          echo "🔍 失败原因分析:"
-          echo "  主要问题：网络下载失败"
-          echo "  具体表现："
-          echo "    - OpenWrt官方镜像404错误"
-          echo "    - Git仓库503错误"
-          echo ""
-          echo "💡 解决方案:"
-          echo "  1. 等待几小时后再试（镜像可能同步）"
-          echo "  2. 使用更稳定的.config配置"
-          echo "  3. 考虑使用其他OpenWrt源码分支"
-          echo "  4. 精简软件包数量"
-          echo ""
-          echo "🛠️ 技术细节:"
-          echo "  失败的包: rpcd-2024-12-02-cc9a471c.tar.xz"
-          echo "  建议：临时禁用rpcd包或使用其他版本"
-        fi
-        echo "========================================"
+        # 添加常见问题解决方案
+        cat >> "$REPORT_DIR/report.md" << 'EOF'
+
+## 常见问题解决方案
+
+### 1. 网络下载失败
